@@ -1,7 +1,6 @@
 package ike
 
 import (
-	"math"
 	"net"
 
 	"github.com/pkg/errors"
@@ -93,13 +92,17 @@ func SendChildSADeleteRequest(
 	spiLen := uint16(0)
 	for _, releaseItem := range relaseList {
 		for _, childSA := range ikeUe.N3IWFChildSecurityAssociation {
+			if len(childSA.PDUSessionIds) == 0 {
+				ikeLog.Errorf("Child SA 0x%08x has no PDU Session ID", childSA.InboundSPI)
+				return
+			}
 			if childSA.PDUSessionIds[0] == releaseItem {
-				spi := childSA.XfrmStateList[0].Spi
-				if spi < 0 || spi > math.MaxUint32 {
-					ikeLog.Errorf("SendChildSADeleteRequest spi out of uint32 range : %d", spi)
+				spi := childSA.OutboundSPI
+				if spi == 0 {
+					ikeLog.Error("SendChildSADeleteRequest outbound SPI is zero")
 					return
 				}
-				deleteSPIs = append(deleteSPIs, uint32(spi))
+				deleteSPIs = append(deleteSPIs, spi)
 				spiLen += 1
 				err := ikeUe.DeleteChildSA(childSA)
 				if err != nil {

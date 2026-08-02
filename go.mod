@@ -13,6 +13,7 @@ require (
 	github.com/gin-gonic/gin v1.10.0
 	github.com/google/gopacket v1.1.19
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826
+	github.com/nycu-ucr/l25gc-n3iwf-dp-client v0.0.0
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.21.0
 	github.com/sirupsen/logrus v1.9.3
@@ -24,6 +25,8 @@ require (
 	golang.org/x/sys v0.38.0
 	gopkg.in/yaml.v2 v2.4.0
 )
+
+replace github.com/nycu-ucr/l25gc-n3iwf-dp-client => ../n3iwf-dp-client
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect

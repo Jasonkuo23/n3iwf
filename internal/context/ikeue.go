@@ -269,11 +269,18 @@ func (ikeUe *N3IWFIkeUe) DeleteChildSAXfrm(childSA *ChildSecurityAssociation) er
 }
 
 func (ikeUe *N3IWFIkeUe) DeleteChildSA(childSA *ChildSecurityAssociation) error {
-	if err := ikeUe.DeleteChildSAXfrm(childSA); err != nil {
-		return err
+	if childSA == nil {
+		return errors.New("DeleteChildSA: child SA is nil")
+	}
+	if childSA.XfrmIface != nil || len(childSA.XfrmStateList) != 0 ||
+		len(childSA.XfrmPolicyList) != 0 {
+		if err := ikeUe.DeleteChildSAXfrm(childSA); err != nil {
+			return err
+		}
 	}
 
 	delete(ikeUe.N3IWFChildSecurityAssociation, childSA.InboundSPI)
+	ikeUe.N3iwfCtx.ChildSA.Delete(childSA.InboundSPI)
 
 	return nil
 }

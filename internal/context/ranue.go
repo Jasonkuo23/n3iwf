@@ -2,7 +2,9 @@ package context
 
 import (
 	"fmt"
+	"math"
 	"net"
+	"sync"
 
 	"github.com/free5gc/ngap/ngapType"
 )
@@ -77,6 +79,8 @@ type RanUeSharedCtx struct {
 }
 
 type PDUSession struct {
+	userPlaneMu                      sync.Mutex
+	userPlaneGeneration              uint64
 	Id                               int64 // PDU Session ID
 	Type                             *ngapType.PDUSessionType
 	Ambr                             *ngapType.PDUSessionAggregateMaximumBitRate
@@ -89,6 +93,16 @@ type PDUSession struct {
 	GTPConnInfo                      *GTPConnectionInfo
 	QFIList                          []uint8
 	QosFlows                         map[int64]*QosFlow // QosFlowIdentifier as key
+}
+
+func (pduSession *PDUSession) NextUserPlaneGeneration() (uint64, error) {
+	pduSession.userPlaneMu.Lock()
+	defer pduSession.userPlaneMu.Unlock()
+	if pduSession.userPlaneGeneration == math.MaxUint64 {
+		return 0, fmt.Errorf("PDU Session[%d] user-plane generation exhausted", pduSession.Id)
+	}
+	pduSession.userPlaneGeneration++
+	return pduSession.userPlaneGeneration, nil
 }
 
 type QosFlow struct {

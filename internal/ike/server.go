@@ -18,6 +18,7 @@ import (
 	ike_message "github.com/free5gc/ike/message"
 	n3iwf_context "github.com/free5gc/n3iwf/internal/context"
 	"github.com/free5gc/n3iwf/internal/logger"
+	"github.com/free5gc/n3iwf/internal/userplane"
 	"github.com/free5gc/n3iwf/pkg/factory"
 	"github.com/free5gc/util/safe_channel"
 )
@@ -34,6 +35,7 @@ type n3iwf interface {
 	Config() *factory.Config
 	Context() *n3iwf_context.N3IWFContext
 	CancelContext() context.Context
+	UserPlane() userplane.Backend
 
 	SendNgapEvt(n3iwf_context.NgapEvt)
 }

@@ -1,6 +1,7 @@
 package ngap
 
 import (
+	"context"
 	"encoding/binary"
 	"math"
 	"net"
@@ -19,6 +20,46 @@ import (
 	"github.com/free5gc/sctp"
 	ngap_metrics "github.com/free5gc/util/metrics/ngap"
 )
+
+const userPlaneControlTimeout = 2 * time.Second
+
+func (s *Server) deletePDUSessionUserPlane(
+	ranUeNgapID int64,
+	pduSession *n3iwf_context.PDUSession,
+) error {
+	if pduSession == nil || pduSession.Id <= 0 || pduSession.Id > math.MaxUint32 ||
+		ranUeNgapID <= 0 {
+		return errors.New("invalid PDU session identity for user-plane delete")
+	}
+	generation, err := pduSession.NextUserPlaneGeneration()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(s.CancelContext(), userPlaneControlTimeout)
+	defer cancel()
+	if err := s.UserPlane().DeleteSession(
+		ctx, generation, uint64(ranUeNgapID), uint32(pduSession.Id)); err != nil {
+		return errors.Wrapf(err, "delete PDU Session[%d] generation %d", pduSession.Id, generation)
+	}
+	return nil
+}
+
+func (s *Server) deleteRanUeUserPlaneSessions(ranUe n3iwf_context.RanUe) error {
+	if ranUe == nil {
+		return errors.New("RAN UE is nil during user-plane cleanup")
+	}
+	ranUeCtx := ranUe.GetSharedCtx()
+	for pduSessionID, pduSession := range ranUeCtx.PduSessionList {
+		if err := s.deletePDUSessionUserPlane(ranUeCtx.RanUeNgapId, pduSession); err != nil {
+			return err
+		}
+		if pduSession.GTPConnInfo != nil {
+			s.Context().DeleteTEID(pduSession.GTPConnInfo.IncomingTEID)
+		}
+		ranUeCtx.DeletePDUSession(pduSessionID)
+	}
+	return nil
+}
 
 func (s *Server) HandleNGSetupResponse(
 	sctpAddr string,
@@ -324,6 +365,12 @@ func (s *Server) HandleNGReset(
 	case ngapType.ResetTypePresentNGInterface:
 		ngapLog.Trace("ResetType Present: NG Interface")
 		// TODO: Release Uu Interface related to this amf(IPSec)
+		for _, ranUe := range amf.N3iwfRanUeList {
+			if err := s.deleteRanUeUserPlaneSessions(ranUe); err != nil {
+				ngapLog.Errorf("Remove AMF-related user-plane sessions: %v", err)
+				return
+			}
+		}
 		// Remove all Ue
 		if err := amf.RemoveAllRelatedUe(); err != nil {
 			ngapLog.Errorf("RemoveAllRelatedUe error : %v", err)
@@ -357,6 +404,10 @@ func (s *Server) HandleNGReset(
 				if ueAssociatedLogicalNGConnectionItem.RANUENGAPID != nil {
 					ngapLog.Warnf("RanUeNgapID[%d]", ueAssociatedLogicalNGConnectionItem.RANUENGAPID.Value)
 				}
+				continue
+			}
+			if err := s.deleteRanUeUserPlaneSessions(ranUe); err != nil {
+				ngapLog.Errorf("Remove RanUE user-plane sessions: %v", err)
 				continue
 			}
 			// TODO: Release Uu Interface (IPSec)
@@ -1206,11 +1257,13 @@ func (s *Server) releaseIkeUeAndRanUe(ranUe n3iwf_context.RanUe) error {
 	n3iwfCtx := s.Context()
 	ranUeNgapID := ranUe.GetSharedCtx().RanUeNgapId
 
+	if err := s.deleteRanUeUserPlaneSessions(ranUe); err != nil {
+		return errors.Wrapf(err, "releaseIkeUeAndRanUe user plane RanUeNgapId[%016x]", ranUeNgapID)
+	}
 	localSPI, ok := n3iwfCtx.IkeSpiLoad(ranUeNgapID)
 	if ok {
 		s.SendIkeEvt(n3iwf_context.NewIKEDeleteRequestEvt(localSPI))
 	}
-
 	if err := ranUe.Remove(); err != nil {
 		return errors.Wrapf(err, "releaseIkeUeAndRanUe RanUeNgapId[%016x]", ranUeNgapID)
 	}
@@ -2163,6 +2216,15 @@ func (s *Server) HandlePDUSessionResourceReleaseCommand(
 	var releaseIdList []int64
 	for _, item := range pDUSessionResourceToReleaseListRelCmd.List {
 		pduSessionId := item.PDUSessionID.Value
+		pduSession := ranUeCtx.FindPDUSession(pduSessionId)
+		if pduSession == nil {
+			ngapLog.Errorf("PDU Session[%d] is not present during release", pduSessionId)
+			return
+		}
+		if err := s.deletePDUSessionUserPlane(rANUENGAPID.Value, pduSession); err != nil {
+			ngapLog.Errorf("Release PDU Session[%d] from user plane failed: %v", pduSessionId, err)
+			return
+		}
 		transfer := ngapType.PDUSessionResourceReleaseCommandTransfer{}
 		err := aper.UnmarshalWithParams(item.PDUSessionResourceReleaseCommandTransfer, &transfer, "valueExt")
 		if err != nil {
@@ -2173,7 +2235,10 @@ func (s *Server) HandlePDUSessionResourceReleaseCommand(
 			printAndGetCause(&transfer.Cause)
 		}
 		ngapLog.Tracef("Release PDU Session Id[%d] due to PDU Session Resource Release Command", pduSessionId)
-		delete(ranUeCtx.PduSessionList, pduSessionId)
+		if pduSession.GTPConnInfo != nil {
+			n3iwfCtx.DeleteTEID(pduSession.GTPConnInfo.IncomingTEID)
+		}
+		ranUeCtx.DeletePDUSession(pduSessionId)
 
 		// response list
 		releaseItem := ngapType.PDUSessionResourceReleasedItemRelRes{
@@ -3386,6 +3451,10 @@ func (s *Server) HandleSendUEContextReleaseComplete(
 		return
 	}
 
+	if err := s.deleteRanUeUserPlaneSessions(ranUe); err != nil {
+		ngapLog.Errorf("Delete RanUe user-plane sessions: %v", err)
+		return
+	}
 	if err := ranUe.Remove(); err != nil {
 		ngapLog.Errorf("Delete RanUe Context error : %v", err)
 	}
@@ -3487,6 +3556,10 @@ func (s *Server) HandleSendSendUEContextRelease(
 	}
 
 	if ranUe.GetSharedCtx().UeCtxRelState {
+		if err := s.deleteRanUeUserPlaneSessions(ranUe); err != nil {
+			ngapLog.Errorf("Delete RanUe user-plane sessions: %v", err)
+			return
+		}
 		if err := ranUe.Remove(); err != nil {
 			ngapLog.Errorf("Delete RanUe Context error : %v", err)
 		}
@@ -3527,6 +3600,10 @@ func (s *Server) HandleSendSendPDUSessionResourceRelease(
 		ranUe.GetSharedCtx().PduSessResRelState = n3iwf_context.PduSessResRelStateNone
 	} else {
 		for _, id := range deletPduIds {
+			pduSession := ranUe.GetSharedCtx().FindPDUSession(id)
+			if pduSession != nil && pduSession.GTPConnInfo != nil {
+				n3iwfCtx.DeleteTEID(pduSession.GTPConnInfo.IncomingTEID)
+			}
 			ranUe.GetSharedCtx().DeletePDUSession(id)
 		}
 		ranUe.GetSharedCtx().PduSessResRelState = n3iwf_context.PduSessResRelStateOngoing

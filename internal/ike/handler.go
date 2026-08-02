@@ -2,6 +2,7 @@ package ike
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -29,7 +30,57 @@ import (
 	n3iwf_context "github.com/free5gc/n3iwf/internal/context"
 	"github.com/free5gc/n3iwf/internal/ike/xfrm"
 	"github.com/free5gc/n3iwf/internal/logger"
+	"github.com/free5gc/n3iwf/internal/userplane"
 )
+
+const userPlaneControlTimeout = 2 * time.Second
+
+func (s *Server) upsertPDUSessionUserPlane(
+	ranUeNgapID int64,
+	pduSession *n3iwf_context.PDUSession,
+	ikeUe *n3iwf_context.N3IWFIkeUe,
+) error {
+	if s.UserPlane().UsesKernelDataPlane() {
+		return nil
+	}
+	session, err := userplane.BuildSession(
+		ranUeNgapID, pduSession, ikeUe,
+		s.Config().GetIPSecGatewayAddr(), s.Config().GetN3iwfGtpBindAddress())
+	if err != nil {
+		return err
+	}
+	generation, err := pduSession.NextUserPlaneGeneration()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(s.CancelContext(), userPlaneControlTimeout)
+	defer cancel()
+	if err := s.UserPlane().UpsertSession(ctx, generation, session); err != nil {
+		return errors.Wrapf(err, "upsert PDU Session[%d] generation %d", pduSession.Id, generation)
+	}
+	return nil
+}
+
+func (s *Server) deletePDUSessionUserPlane(
+	ranUeNgapID int64,
+	pduSession *n3iwf_context.PDUSession,
+) error {
+	if pduSession == nil || pduSession.Id <= 0 || pduSession.Id > math.MaxUint32 ||
+		ranUeNgapID <= 0 {
+		return errors.New("invalid PDU session identity for user-plane delete")
+	}
+	generation, err := pduSession.NextUserPlaneGeneration()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(s.CancelContext(), userPlaneControlTimeout)
+	defer cancel()
+	if err := s.UserPlane().DeleteSession(
+		ctx, generation, uint64(ranUeNgapID), uint32(pduSession.Id)); err != nil {
+		return errors.Wrapf(err, "delete PDU Session[%d] generation %d", pduSession.Id, generation)
+	}
+	return nil
+}
 
 func (s *Server) HandleIKESAINIT(
 	udpConn *net.UDPConn,
@@ -1104,54 +1155,67 @@ func (s *Server) continueCreateChildSA(
 		childSecurityAssociationContext.NATPort = ikeConnection.UEAddr.Port
 	}
 
-	newXfrmiId := cfg.GetXfrmIfaceId()
-
-	pduSessionListLen := ikeUe.PduSessionListLen
-
-	// The additional PDU session will be separated from default xfrm interface
-	// to avoid SPD entry collision
-	if pduSessionListLen > 1 {
-		// Setup XFRM interface for ipsec
-		var linkIPSec netlink.Link
-		n3iwfIPAddr := net.ParseIP(ipsecGwAddr).To4()
-		n3iwfIPAddrAndSubnet := net.IPNet{IP: n3iwfIPAddr, Mask: n3iwfCtx.IPSecInnerIPPool.IPSubnet.Mask}
-		newXfrmiId += cfg.GetXfrmIfaceId() + n3iwfCtx.XfrmIfaceIdOffsetForUP
-		newXfrmiName := fmt.Sprintf("%s-%d", cfg.GetXfrmIfaceName(), newXfrmiId)
-
-		linkIPSec, err = xfrm.SetupIPsecXfrmi(
-			newXfrmiName, n3iwfCtx.XfrmParentIfaceName,
-			newXfrmiId, n3iwfIPAddrAndSubnet)
-		if err != nil {
-			ikeLog.Errorf("Setup XFRM interface %s fail: %v", newXfrmiName, err)
-			return
-		}
-
-		ikeLog.Infof("Setup XFRM interface: %s", newXfrmiName)
-		n3iwfCtx.XfrmIfaces.LoadOrStore(newXfrmiId, linkIPSec)
-		childSecurityAssociationContext.XfrmIface = linkIPSec
-		n3iwfCtx.XfrmIfaceIdOffsetForUP++
-	} else {
-		linkIPSec, ok := n3iwfCtx.XfrmIfaces.Load(newXfrmiId)
-		if !ok {
-			ikeLog.Warnf("Cannot find the XFRM interface with if_id: %d", newXfrmiId)
-			return
-		}
-		childSecurityAssociationContext.XfrmIface = linkIPSec.(netlink.Link)
-	}
-
-	// Aplly XFRM rules
-	childSecurityAssociationContext.LocalIsInitiator = true
-	err = xfrm.ApplyXFRMRule(true, newXfrmiId, childSecurityAssociationContext)
-	if err != nil {
-		ikeLog.Errorf("Applying XFRM rules failed: %v", err)
-		return
-	}
-	ikeLog.Debugln(childSecurityAssociationContext.String(newXfrmiId))
-
 	ranNgapId, ok := n3iwfCtx.NgapIdLoad(ikeSecurityAssociation.LocalSPI)
 	if !ok {
 		ikeLog.Errorf("Cannot get RanNgapId from SPI : %+v",
 			ikeSecurityAssociation.LocalSPI)
+		return
+	}
+
+	childSecurityAssociationContext.LocalIsInitiator = true
+	if s.UserPlane().UsesKernelDataPlane() {
+		newXfrmiId := cfg.GetXfrmIfaceId()
+		pduSessionListLen := ikeUe.PduSessionListLen
+
+		// The additional PDU session will be separated from default xfrm interface
+		// to avoid SPD entry collision.
+		if pduSessionListLen > 1 {
+			var linkIPSec netlink.Link
+			n3iwfIPAddr := net.ParseIP(ipsecGwAddr).To4()
+			n3iwfIPAddrAndSubnet := net.IPNet{
+				IP: n3iwfIPAddr, Mask: n3iwfCtx.IPSecInnerIPPool.IPSubnet.Mask,
+			}
+			newXfrmiId += cfg.GetXfrmIfaceId() + n3iwfCtx.XfrmIfaceIdOffsetForUP
+			newXfrmiName := fmt.Sprintf("%s-%d", cfg.GetXfrmIfaceName(), newXfrmiId)
+
+			linkIPSec, err = xfrm.SetupIPsecXfrmi(
+				newXfrmiName, n3iwfCtx.XfrmParentIfaceName,
+				newXfrmiId, n3iwfIPAddrAndSubnet)
+			if err != nil {
+				ikeLog.Errorf("Setup XFRM interface %s fail: %v", newXfrmiName, err)
+				return
+			}
+
+			ikeLog.Infof("Setup XFRM interface: %s", newXfrmiName)
+			n3iwfCtx.XfrmIfaces.LoadOrStore(newXfrmiId, linkIPSec)
+			childSecurityAssociationContext.XfrmIface = linkIPSec
+			n3iwfCtx.XfrmIfaceIdOffsetForUP++
+		} else {
+			linkIPSec, loaded := n3iwfCtx.XfrmIfaces.Load(newXfrmiId)
+			if !loaded {
+				ikeLog.Warnf("Cannot find the XFRM interface with if_id: %d", newXfrmiId)
+				return
+			}
+			childSecurityAssociationContext.XfrmIface = linkIPSec.(netlink.Link)
+		}
+
+		err = xfrm.ApplyXFRMRule(true, newXfrmiId, childSecurityAssociationContext)
+		if err != nil {
+			ikeLog.Errorf("Applying XFRM rules failed: %v", err)
+			return
+		}
+		ikeLog.Debugln(childSecurityAssociationContext.String(newXfrmiId))
+	} else if err = s.upsertPDUSessionUserPlane(
+		ranNgapId, temporaryPDUSessionSetupData.UnactivatedPDUSession[temporaryPDUSessionSetupData.Index-1], ikeUe); err != nil {
+		ikeLog.Errorf("Program ONVM PDU session failed: %v", err)
+		if deleteErr := ikeUe.DeleteChildSA(childSecurityAssociationContext); deleteErr != nil {
+			ikeLog.Errorf("Delete failed Child SA: %v", deleteErr)
+		}
+		temporaryPDUSessionSetupData.FailedErrStr = append(
+			temporaryPDUSessionSetupData.FailedErrStr,
+			n3iwf_context.ErrTransportResourceUnavailable)
+		ikeSecurityAssociation.ResponderMessageID++
+		s.CreatePDUSessionChildSA(ikeUe, temporaryPDUSessionSetupData)
 		return
 	}
 	// Forward PDU Seesion Establishment Accept to UE
@@ -2117,19 +2181,36 @@ func (s *Server) deleteChildSAFromSPIList(ikeUe *n3iwf_context.N3IWFIkeUe, spiLi
 	ikeLog := logger.IKELog
 	var deleteSPIs []uint32
 	var deletePduIds []int64
+	ranNgapID, ok := s.Context().NgapIdLoad(ikeUe.N3IWFIKESecurityAssociation.LocalSPI)
+	if !ok {
+		return nil, nil, errors.New("cannot find RAN UE NGAP ID for Child-SA deletion")
+	}
+	ranUe, ok := s.Context().RanUePoolLoad(ranNgapID)
+	if !ok {
+		return nil, nil, errors.New("cannot find RAN UE for Child-SA deletion")
+	}
 
 	for _, spi := range spiList {
 		found := false
 		for _, childSA := range ikeUe.N3IWFChildSecurityAssociation {
 			if childSA.OutboundSPI == spi {
 				found = true
-				deleteSPIs = append(deleteSPIs, childSA.InboundSPI)
 
 				if len(childSA.PDUSessionIds) == 0 {
 					return nil, nil, errors.Errorf("Child_SA SPI: 0x%08x doesn't have PDU Session ID",
 						spi)
 				}
-				deletePduIds = append(deletePduIds, childSA.PDUSessionIds[0])
+				pduSessionID := childSA.PDUSessionIds[0]
+				pduSession := ranUe.GetSharedCtx().FindPDUSession(pduSessionID)
+				if pduSession == nil {
+					return nil, nil, errors.Errorf("PDU Session[%d] is absent during Child-SA deletion",
+						pduSessionID)
+				}
+				if err := s.deletePDUSessionUserPlane(ranNgapID, pduSession); err != nil {
+					return nil, nil, err
+				}
+				deleteSPIs = append(deleteSPIs, childSA.InboundSPI)
+				deletePduIds = append(deletePduIds, pduSessionID)
 
 				err := ikeUe.DeleteChildSA(childSA)
 				if err != nil {

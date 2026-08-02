@@ -21,6 +21,7 @@ import (
 	"github.com/free5gc/n3iwf/internal/ngap"
 	"github.com/free5gc/n3iwf/internal/nwucp"
 	"github.com/free5gc/n3iwf/internal/nwuup"
+	"github.com/free5gc/n3iwf/internal/userplane"
 	"github.com/free5gc/n3iwf/pkg/app"
 	"github.com/free5gc/n3iwf/pkg/factory"
 	"github.com/free5gc/util/metrics"
@@ -37,6 +38,7 @@ type N3iwfApp struct {
 	ngapServer    *ngap.Server
 	nwucpServer   *nwucp.Server
 	nwuupServer   *nwuup.Server
+	userPlane     userplane.Backend
 	ikeServer     *ike.Server
 	metricsServer *metrics.Server
 	ctx           context.Context
@@ -70,6 +72,10 @@ func NewApp(
 		return nil, errors.Wrap(err, "NewApp()")
 	}
 	if n3iwf.nwuupServer, err = nwuup.NewServer(n3iwf); err != nil {
+		return nil, errors.Wrap(err, "NewApp()")
+	}
+	if n3iwf.userPlane, err = userplane.New(
+		cfg.GetUserPlaneBackend(), cfg.GetN3iwfDPControlSocket()); err != nil {
 		return nil, errors.Wrap(err, "NewApp()")
 	}
 	if n3iwf.ikeServer, err = ike.NewServer(n3iwf); err != nil {
@@ -120,6 +126,10 @@ func (a *N3iwfApp) Config() *factory.Config {
 	return a.cfg
 }
 
+func (a *N3iwfApp) UserPlane() userplane.Backend {
+	return a.userPlane
+}
+
 func (a *N3iwfApp) SetLogEnable(enable bool) {
 	logger.MainLog.Infof("Log enable is set to [%v]", enable)
 	if enable && logger.Log.Out == os.Stderr {
@@ -164,7 +174,11 @@ func (a *N3iwfApp) SetReportCaller(reportCaller bool) {
 }
 
 func (a *N3iwfApp) Run() error {
+	if err := a.userPlane.Start(a.ctx); err != nil {
+		return errors.Wrap(err, "start user-plane backend")
+	}
 	if err := a.initDefaultXfrmInterface(); err != nil {
+		_ = a.userPlane.Close()
 		return err
 	}
 	mainLog := logger.MainLog
@@ -185,11 +199,16 @@ func (a *N3iwfApp) Run() error {
 	}
 	mainLog.Infof("NAS TCP server successfully started.")
 
-	// User plane of N3IWF
-	if err := a.nwuupServer.Run(&a.wg); err != nil {
-		return errors.Wrapf(err, "Listen NWu user plane traffic failed")
+	// The Linux backend retains the raw GRE/GTP-U sockets. The ONVM backend
+	// has already completed a fail-fast N3DP hello and owns user packets.
+	if a.userPlane.UsesKernelDataPlane() {
+		if err := a.nwuupServer.Run(&a.wg); err != nil {
+			return errors.Wrapf(err, "Listen NWu user plane traffic failed")
+		}
+		mainLog.Infof("Listening NWu user plane traffic with Linux backend")
+	} else {
+		mainLog.Infof("N3IWF user plane delegated to %s backend", a.userPlane.Name())
 	}
-	mainLog.Infof("Listening NWu user plane traffic")
 
 	// IKE
 	if err := a.ikeServer.Run(&a.wg); err != nil {
@@ -294,7 +313,12 @@ func (a *N3iwfApp) terminateProcedure() {
 
 	a.ngapServer.Stop()
 	a.nwucpServer.Stop()
-	a.nwuupServer.Stop()
+	if a.userPlane.UsesKernelDataPlane() {
+		a.nwuupServer.Stop()
+	}
+	if err := a.userPlane.Close(); err != nil {
+		logger.MainLog.Errorf("Close %s user-plane backend: %v", a.userPlane.Name(), err)
+	}
 	a.ikeServer.Stop()
 	if a.metricsServer != nil {
 		a.metricsServer.Stop()

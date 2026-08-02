@@ -12,6 +12,7 @@ import (
 	n3iwf_context "github.com/free5gc/n3iwf/internal/context"
 	"github.com/free5gc/n3iwf/internal/logger"
 	"github.com/free5gc/n3iwf/internal/ngap/message"
+	"github.com/free5gc/n3iwf/internal/userplane"
 	"github.com/free5gc/n3iwf/pkg/factory"
 	lib_ngap "github.com/free5gc/ngap"
 	"github.com/free5gc/sctp"
@@ -27,6 +28,7 @@ type n3iwf interface {
 	Config() *factory.Config
 	Context() *n3iwf_context.N3IWFContext
 	CancelContext() context.Context
+	UserPlane() userplane.Backend
 
 	SendIkeEvt(n3iwf_context.IkeEvt)
 }
