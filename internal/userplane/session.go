@@ -20,7 +20,9 @@ func BuildSession(
 	n3iwfNWuAddress string,
 	n3iwfN3Address string,
 ) (Session, error) {
-	if ranUeNgapID <= 0 {
+	// TS 38.413 permits RAN UE NGAP IDs starting at zero, and this N3IWF's
+	// allocator intentionally issues zero for its first UE.
+	if ranUeNgapID < 0 {
 		return Session{}, fmt.Errorf("invalid RAN UE NGAP ID %d", ranUeNgapID)
 	}
 	if pduSession == nil || pduSession.Id <= 0 || pduSession.Id > math.MaxUint32 {
@@ -30,8 +32,15 @@ func BuildSession(
 		pduSession.GTPConnInfo.OutgoingTEID == 0 {
 		return Session{}, fmt.Errorf("PDU Session[%d] has incomplete GTP tunnel state", pduSession.Id)
 	}
-	if len(pduSession.QFIList) != 1 || pduSession.QFIList[0] == 0 || pduSession.QFIList[0] > 63 {
-		return Session{}, fmt.Errorf("PDU Session[%d] requires exactly one QFI in range 1..63", pduSession.Id)
+	if len(pduSession.QFIList) == 0 || len(pduSession.QFIList) > 63 {
+		return Session{}, fmt.Errorf("PDU Session[%d] requires 1..63 QFIs", pduSession.Id)
+	}
+	seenQFI := uint64(0)
+	for _, qfi := range pduSession.QFIList {
+		if qfi == 0 || qfi > 63 || seenQFI&(uint64(1)<<qfi) != 0 {
+			return Session{}, fmt.Errorf("PDU Session[%d] has invalid or duplicate QFI %d", pduSession.Id, qfi)
+		}
+		seenQFI |= uint64(1) << qfi
 	}
 	if ikeUe == nil {
 		return Session{}, fmt.Errorf("PDU Session[%d] has no IKE UE", pduSession.Id)
@@ -55,6 +64,6 @@ func BuildSession(
 		UENWuAddress:    ueNWu,
 		N3IWFN3Address:  n3iwfN3,
 		UPFN3Address:    upfN3,
-		QFIs:            []uint8{pduSession.QFIList[0]},
+		QFIs:            append([]uint8(nil), pduSession.QFIList...),
 	}, nil
 }

@@ -6,6 +6,7 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 
 	"github.com/free5gc/ike/message"
 	"github.com/free5gc/n3iwf/internal/context"
@@ -13,6 +14,39 @@ import (
 )
 
 type XFRMEncryptionAlgorithmType uint16
+
+func addOrUpdateXFRMState(state *netlink.XfrmState) error {
+	if err := netlink.XfrmStateAdd(state); err != nil {
+		if errors.Cause(err) != unix.EEXIST {
+			return err
+		}
+		return netlink.XfrmStateUpdate(state)
+	}
+	return nil
+}
+
+func addOrUpdateXFRMPolicy(policy *netlink.XfrmPolicy) error {
+	if err := netlink.XfrmPolicyAdd(policy); err != nil {
+		if errors.Cause(err) != unix.EEXIST {
+			return err
+		}
+		return netlink.XfrmPolicyUpdate(policy)
+	}
+	return nil
+}
+
+func rollbackAppliedXFRM(childSA *context.ChildSecurityAssociation) {
+	for index := len(childSA.XfrmPolicyList) - 1; index >= 0; index-- {
+		policy := childSA.XfrmPolicyList[index]
+		_ = netlink.XfrmPolicyDel(&policy)
+	}
+	for index := len(childSA.XfrmStateList) - 1; index >= 0; index-- {
+		state := childSA.XfrmStateList[index]
+		_ = netlink.XfrmStateDel(&state)
+	}
+	childSA.XfrmPolicyList = nil
+	childSA.XfrmStateList = nil
+}
 
 func (xfrmEncryptionAlgorithmType XFRMEncryptionAlgorithmType) String() string {
 	switch xfrmEncryptionAlgorithmType {
@@ -54,7 +88,12 @@ func (xfrmIntegrityAlgorithmType XFRMIntegrityAlgorithmType) String() string {
 
 func ApplyXFRMRule(n3iwf_is_initiator bool, xfrmiId uint32,
 	childSecurityAssociation *context.ChildSecurityAssociation,
-) error {
+) (resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			rollbackAppliedXFRM(childSecurityAssociation)
+		}
+	}()
 	// Build XFRM information data structure for incoming traffic.
 
 	// Direction: {private_network} -> this_server
@@ -102,7 +141,7 @@ func ApplyXFRMRule(n3iwf_is_initiator bool, xfrmiId uint32,
 
 	// Commit xfrm state to netlink
 	var err error
-	if err = netlink.XfrmStateAdd(xfrmState); err != nil {
+	if err = addOrUpdateXFRMState(xfrmState); err != nil {
 		return errors.Wrapf(err, "Add XFRM state")
 	}
 
@@ -129,7 +168,7 @@ func ApplyXFRMRule(n3iwf_is_initiator bool, xfrmiId uint32,
 	}
 
 	// Commit xfrm policy to netlink
-	if err = netlink.XfrmPolicyAdd(xfrmPolicy); err != nil {
+	if err = addOrUpdateXFRMPolicy(xfrmPolicy); err != nil {
 		return errors.Wrapf(err, "Add XFRM policy")
 	}
 
@@ -165,7 +204,7 @@ func ApplyXFRMRule(n3iwf_is_initiator bool, xfrmiId uint32,
 	}
 
 	// Commit xfrm state to netlink
-	if err = netlink.XfrmStateAdd(xfrmState); err != nil {
+	if err = addOrUpdateXFRMState(xfrmState); err != nil {
 		return errors.Wrapf(err, "Add XFRM state")
 	}
 
@@ -182,7 +221,7 @@ func ApplyXFRMRule(n3iwf_is_initiator bool, xfrmiId uint32,
 	}
 
 	// Commit xfrm policy to netlink
-	if err = netlink.XfrmPolicyAdd(xfrmPolicy); err != nil {
+	if err = addOrUpdateXFRMPolicy(xfrmPolicy); err != nil {
 		return errors.Wrapf(err, "Add XFRM policy")
 	}
 

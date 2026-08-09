@@ -5,14 +5,44 @@ import (
 	"net"
 	"testing"
 
+	ike_security "github.com/free5gc/ike/security"
+	"github.com/free5gc/ike/security/encr"
+	"github.com/free5gc/ike/security/esn"
+	"github.com/free5gc/ike/security/integ"
 	n3iwf_context "github.com/free5gc/n3iwf/internal/context"
 	"github.com/free5gc/n3iwf/internal/userplane"
 )
 
+func makeTestChildSA(t *testing.T, ikeUe *n3iwf_context.N3IWFIkeUe) *n3iwf_context.ChildSecurityAssociation {
+	t.Helper()
+	esnInfo, err := esn.StrToType(esn.String_ESN_DISABLE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &n3iwf_context.ChildSecurityAssociation{
+		InboundSPI: 1001, OutboundSPI: 1002,
+		LocalPublicIPAddr:     net.ParseIP("192.168.127.1"),
+		PeerPublicIPAddr:      net.ParseIP("192.168.127.2"),
+		TrafficSelectorLocal:  net.IPNet{IP: net.ParseIP("10.0.0.1"), Mask: net.CIDRMask(32, 32)},
+		TrafficSelectorRemote: net.IPNet{IP: net.ParseIP("10.0.0.2"), Mask: net.CIDRMask(32, 32)},
+		SelectedIPProtocol:    47, IkeUE: ikeUe, LocalIsInitiator: true,
+		ChildSAKey: &ike_security.ChildSAKey{
+			EncrKInfo:  encr.StrToKType("ENCR_AES_CBC_128"),
+			IntegKInfo: integ.StrToKType("AUTH_HMAC_SHA1_96"), EsnInfo: esnInfo,
+			InitiatorToResponderEncryptionKey: make([]byte, 16),
+			ResponderToInitiatorEncryptionKey: make([]byte, 16),
+			InitiatorToResponderIntegrityKey:  make([]byte, 20),
+			ResponderToInitiatorIntegrityKey:  make([]byte, 20),
+		},
+	}
+}
+
 type recordingUserPlane struct {
-	upserts    int
-	generation uint64
-	session    userplane.Session
+	upserts         int
+	childUpserts    int
+	generation      uint64
+	childGeneration uint64
+	session         userplane.Session
 }
 
 func (*recordingUserPlane) Name() string                { return userplane.BackendONVM }
@@ -29,6 +59,14 @@ func (r *recordingUserPlane) UpsertSession(
 	return nil
 }
 func (*recordingUserPlane) DeleteSession(context.Context, uint64, uint64, uint32) error {
+	return nil
+}
+func (r *recordingUserPlane) UpsertChildSA(_ context.Context, generation uint64, _ userplane.ChildSA) error {
+	r.childUpserts++
+	r.childGeneration = generation
+	return nil
+}
+func (*recordingUserPlane) DeleteChildSA(context.Context, uint64, uint64, uint32, uint32) error {
 	return nil
 }
 func (*recordingUserPlane) Close() error { return nil }
@@ -57,10 +95,12 @@ func TestUpsertPDUSessionUserPlane(t *testing.T) {
 	}
 	ikeUe := &n3iwf_context.N3IWFIkeUe{IPSecInnerIP: net.ParseIP("10.0.0.2")}
 
-	if err := server.upsertPDUSessionUserPlane(42, pduSession, ikeUe); err != nil {
+	childSA := makeTestChildSA(t, ikeUe)
+	if err := server.upsertPDUSessionUserPlane(42, pduSession, ikeUe, childSA); err != nil {
 		t.Fatal(err)
 	}
-	if recorder.upserts != 1 || recorder.generation != 1 ||
+	if recorder.childUpserts != 1 || recorder.childGeneration != 1 ||
+		recorder.upserts != 1 || recorder.generation != 2 ||
 		recorder.session.UEID != 42 || recorder.session.UplinkTEID != 100 ||
 		recorder.session.DownlinkTEID != 200 {
 		t.Fatalf("unexpected upsert: %+v", recorder)

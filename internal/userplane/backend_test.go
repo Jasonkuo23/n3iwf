@@ -43,6 +43,18 @@ func (f *fakeControlClient) DeleteSession(
 	f.lastGeneration = generation
 	return nil
 }
+func (f *fakeControlClient) UpsertChildSA(_ context.Context, generation uint64,
+	_ n3iwfdp.ChildSA) error {
+	f.upsertCalls++
+	f.lastGeneration = generation
+	return nil
+}
+func (f *fakeControlClient) DeleteChildSA(_ context.Context, generation, _ uint64,
+	_, _ uint32) error {
+	f.deleteCalls++
+	f.lastGeneration = generation
+	return nil
+}
 
 func (f *fakeControlClient) Close() error {
 	f.closeCalls++

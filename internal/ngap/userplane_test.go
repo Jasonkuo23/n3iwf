@@ -34,6 +34,12 @@ func (r *recordingDeleteUserPlane) DeleteSession(
 	r.pduSessionID = pduSessionID
 	return nil
 }
+func (*recordingDeleteUserPlane) UpsertChildSA(context.Context, uint64, userplane.ChildSA) error {
+	return nil
+}
+func (*recordingDeleteUserPlane) DeleteChildSA(context.Context, uint64, uint64, uint32, uint32) error {
+	return nil
+}
 func (*recordingDeleteUserPlane) Close() error { return nil }
 
 func TestDeletePDUSessionUserPlane(t *testing.T) {

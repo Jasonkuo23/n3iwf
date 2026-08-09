@@ -16,16 +16,17 @@ const (
 // N3IWF procedure code depends on its user-plane backend, not directly on a
 // particular control transport.
 type Session = n3iwfdp.Session
+type ChildSA = n3iwfdp.ChildSA
 
-// Backend owns the N3IWF user-plane lifecycle and session synchronization.
-// Child-SA programming will be added separately because it must include all
-// negotiated TS 33.501/IKEv2 security parameters and secure key handling.
+// Backend owns the N3IWF user-plane and Child-SA lifecycle synchronization.
 type Backend interface {
 	Name() string
 	UsesKernelDataPlane() bool
 	Start(context.Context) error
 	UpsertSession(context.Context, uint64, Session) error
 	DeleteSession(context.Context, uint64, uint64, uint32) error
+	UpsertChildSA(context.Context, uint64, ChildSA) error
+	DeleteChildSA(context.Context, uint64, uint64, uint32, uint32) error
 	Close() error
 }
 
@@ -41,11 +42,17 @@ func (linuxBackend) UpsertSession(context.Context, uint64, Session) error {
 func (linuxBackend) DeleteSession(context.Context, uint64, uint64, uint32) error {
 	return nil
 }
+func (linuxBackend) UpsertChildSA(context.Context, uint64, ChildSA) error { return nil }
+func (linuxBackend) DeleteChildSA(context.Context, uint64, uint64, uint32, uint32) error {
+	return nil
+}
 
 type controlClient interface {
 	Hello(context.Context) error
 	UpsertSession(context.Context, uint64, n3iwfdp.Session) error
 	DeleteSession(context.Context, uint64, uint64, uint32) error
+	UpsertChildSA(context.Context, uint64, n3iwfdp.ChildSA) error
+	DeleteChildSA(context.Context, uint64, uint64, uint32, uint32) error
 	Close() error
 }
 
@@ -71,6 +78,13 @@ func (b onvmBackend) DeleteSession(
 	pduSessionID uint32,
 ) error {
 	return b.client.DeleteSession(ctx, generation, ueID, pduSessionID)
+}
+func (b onvmBackend) UpsertChildSA(ctx context.Context, generation uint64, sa ChildSA) error {
+	return b.client.UpsertChildSA(ctx, generation, sa)
+}
+func (b onvmBackend) DeleteChildSA(ctx context.Context, generation, ueID uint64,
+	pduSessionID, inboundSPI uint32) error {
+	return b.client.DeleteChildSA(ctx, generation, ueID, pduSessionID, inboundSPI)
 }
 func (b onvmBackend) Close() error { return b.client.Close() }
 

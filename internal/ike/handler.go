@@ -39,6 +39,7 @@ func (s *Server) upsertPDUSessionUserPlane(
 	ranUeNgapID int64,
 	pduSession *n3iwf_context.PDUSession,
 	ikeUe *n3iwf_context.N3IWFIkeUe,
+	childSA *n3iwf_context.ChildSecurityAssociation,
 ) error {
 	if s.UserPlane().UsesKernelDataPlane() {
 		return nil
@@ -49,24 +50,45 @@ func (s *Server) upsertPDUSessionUserPlane(
 	if err != nil {
 		return err
 	}
+	sa, err := userplane.BuildChildSA(ranUeNgapID, pduSession.Id, childSA)
+	if err != nil {
+		return err
+	}
+	defer userplane.ClearChildSAKeys(&sa)
 	generation, err := pduSession.NextUserPlaneGeneration()
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(s.CancelContext(), userPlaneControlTimeout)
 	defer cancel()
+	if err := s.UserPlane().UpsertChildSA(ctx, generation, sa); err != nil {
+		return errors.Wrapf(err, "upsert Child SA SPI 0x%08x generation %d",
+			childSA.InboundSPI, generation)
+	}
+	generation, err = pduSession.NextUserPlaneGeneration()
+	if err != nil {
+		return err
+	}
 	if err := s.UserPlane().UpsertSession(ctx, generation, session); err != nil {
+		rollbackGeneration, generationErr := pduSession.NextUserPlaneGeneration()
+		if generationErr == nil {
+			_ = s.UserPlane().DeleteChildSA(ctx, rollbackGeneration,
+				uint64(ranUeNgapID), uint32(pduSession.Id), childSA.InboundSPI)
+		}
 		return errors.Wrapf(err, "upsert PDU Session[%d] generation %d", pduSession.Id, generation)
 	}
+	logger.IKELog.Infof("Programmed ONVM Child SA SPI 0x%08x and PDU Session[%d] generation %d",
+		childSA.InboundSPI, pduSession.Id, generation)
 	return nil
 }
 
 func (s *Server) deletePDUSessionUserPlane(
 	ranUeNgapID int64,
 	pduSession *n3iwf_context.PDUSession,
+	childSA *n3iwf_context.ChildSecurityAssociation,
 ) error {
 	if pduSession == nil || pduSession.Id <= 0 || pduSession.Id > math.MaxUint32 ||
-		ranUeNgapID <= 0 {
+		ranUeNgapID < 0 || childSA == nil || childSA.InboundSPI == 0 {
 		return errors.New("invalid PDU session identity for user-plane delete")
 	}
 	generation, err := pduSession.NextUserPlaneGeneration()
@@ -79,6 +101,17 @@ func (s *Server) deletePDUSessionUserPlane(
 		ctx, generation, uint64(ranUeNgapID), uint32(pduSession.Id)); err != nil {
 		return errors.Wrapf(err, "delete PDU Session[%d] generation %d", pduSession.Id, generation)
 	}
+	generation, err = pduSession.NextUserPlaneGeneration()
+	if err != nil {
+		return err
+	}
+	if err := s.UserPlane().DeleteChildSA(ctx, generation, uint64(ranUeNgapID),
+		uint32(pduSession.Id), childSA.InboundSPI); err != nil {
+		return errors.Wrapf(err, "delete Child SA SPI 0x%08x generation %d",
+			childSA.InboundSPI, generation)
+	}
+	logger.IKELog.Infof("Deleted ONVM PDU Session[%d] and Child SA SPI 0x%08x generation %d",
+		pduSession.Id, childSA.InboundSPI, generation)
 	return nil
 }
 
@@ -1206,7 +1239,8 @@ func (s *Server) continueCreateChildSA(
 		}
 		ikeLog.Debugln(childSecurityAssociationContext.String(newXfrmiId))
 	} else if err = s.upsertPDUSessionUserPlane(
-		ranNgapId, temporaryPDUSessionSetupData.UnactivatedPDUSession[temporaryPDUSessionSetupData.Index-1], ikeUe); err != nil {
+		ranNgapId, temporaryPDUSessionSetupData.UnactivatedPDUSession[temporaryPDUSessionSetupData.Index-1],
+		ikeUe, childSecurityAssociationContext); err != nil {
 		ikeLog.Errorf("Program ONVM PDU session failed: %v", err)
 		if deleteErr := ikeUe.DeleteChildSA(childSecurityAssociationContext); deleteErr != nil {
 			ikeLog.Errorf("Delete failed Child SA: %v", deleteErr)
@@ -2206,7 +2240,7 @@ func (s *Server) deleteChildSAFromSPIList(ikeUe *n3iwf_context.N3IWFIkeUe, spiLi
 					return nil, nil, errors.Errorf("PDU Session[%d] is absent during Child-SA deletion",
 						pduSessionID)
 				}
-				if err := s.deletePDUSessionUserPlane(ranNgapID, pduSession); err != nil {
+				if err := s.deletePDUSessionUserPlane(ranNgapID, pduSession, childSA); err != nil {
 					return nil, nil, err
 				}
 				deleteSPIs = append(deleteSPIs, childSA.InboundSPI)
