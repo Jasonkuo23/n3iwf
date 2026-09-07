@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"math"
 	"net"
+	"sort"
 	"time"
 
 	"github.com/pkg/errors"
@@ -26,10 +27,17 @@ const userPlaneControlTimeout = 2 * time.Second
 func (s *Server) deletePDUSessionUserPlane(
 	ranUeNgapID int64,
 	pduSession *n3iwf_context.PDUSession,
+	childSAs ...*n3iwf_context.ChildSecurityAssociation,
 ) error {
 	if pduSession == nil || pduSession.Id <= 0 || pduSession.Id > math.MaxUint32 ||
-		ranUeNgapID <= 0 {
+		ranUeNgapID < 0 {
 		return errors.New("invalid PDU session identity for user-plane delete")
+	}
+	for _, childSA := range childSAs {
+		if childSA == nil || childSA.InboundSPI == 0 ||
+			!childSABelongsToPDUSession(childSA, pduSession.Id) {
+			return errors.New("invalid Child SA identity for user-plane delete")
+		}
 	}
 	generation, err := pduSession.NextUserPlaneGeneration()
 	if err != nil {
@@ -41,7 +49,49 @@ func (s *Server) deletePDUSessionUserPlane(
 		ctx, generation, uint64(ranUeNgapID), uint32(pduSession.Id)); err != nil {
 		return errors.Wrapf(err, "delete PDU Session[%d] generation %d", pduSession.Id, generation)
 	}
+	for _, childSA := range childSAs {
+		generation, err = pduSession.NextUserPlaneGeneration()
+		if err != nil {
+			return err
+		}
+		if err := s.UserPlane().DeleteChildSA(ctx, generation, uint64(ranUeNgapID),
+			uint32(pduSession.Id), childSA.InboundSPI); err != nil {
+			return errors.Wrapf(err, "delete Child SA SPI 0x%08x generation %d",
+				childSA.InboundSPI, generation)
+		}
+	}
+	logger.NgapLog.Infof("Deleted user-plane PDU Session[%d] and %d Child SA(s) through generation %d",
+		pduSession.Id, len(childSAs), generation)
 	return nil
+}
+
+func childSABelongsToPDUSession(
+	childSA *n3iwf_context.ChildSecurityAssociation,
+	pduSessionID int64,
+) bool {
+	if childSA == nil || len(childSA.PDUSessionIds) != 1 {
+		return false
+	}
+	return childSA.PDUSessionIds[0] == pduSessionID
+}
+
+func childSAsForPDUSession(
+	ikeUe *n3iwf_context.N3IWFIkeUe,
+	pduSessionID int64,
+) []*n3iwf_context.ChildSecurityAssociation {
+	if ikeUe == nil {
+		return nil
+	}
+	childSAs := make([]*n3iwf_context.ChildSecurityAssociation, 0, 1)
+	for _, childSA := range ikeUe.N3IWFChildSecurityAssociation {
+		if childSABelongsToPDUSession(childSA, pduSessionID) {
+			childSAs = append(childSAs, childSA)
+		}
+	}
+	sort.Slice(childSAs, func(i, j int) bool {
+		return childSAs[i].InboundSPI < childSAs[j].InboundSPI
+	})
+	return childSAs
 }
 
 func (s *Server) deleteRanUeUserPlaneSessions(ranUe n3iwf_context.RanUe) error {
@@ -2212,6 +2262,17 @@ func (s *Server) HandlePDUSessionResourceReleaseCommand(
 	// n3iwf does not support paging
 	// }
 
+	localSPI, ok := n3iwfCtx.IkeSpiLoad(rANUENGAPID.Value)
+	if !ok {
+		ngapLog.Errorf("Cannot get SPI from RanUeNgapID : %+v", rANUENGAPID.Value)
+		return
+	}
+	ikeUe, ok := n3iwfCtx.IkeUePoolLoad(localSPI)
+	if !ok {
+		ngapLog.Errorf("Cannot get IkeUE from SPI : %016x", localSPI)
+		return
+	}
+
 	releaseList := ngapType.PDUSessionResourceReleasedListRelRes{}
 	var releaseIdList []int64
 	for _, item := range pDUSessionResourceToReleaseListRelCmd.List {
@@ -2221,7 +2282,11 @@ func (s *Server) HandlePDUSessionResourceReleaseCommand(
 			ngapLog.Errorf("PDU Session[%d] is not present during release", pduSessionId)
 			return
 		}
-		if err := s.deletePDUSessionUserPlane(rANUENGAPID.Value, pduSession); err != nil {
+		childSAs := childSAsForPDUSession(ikeUe, pduSessionId)
+		if len(childSAs) == 0 {
+			ngapLog.Warnf("Release PDU Session[%d] has no associated Child SA", pduSessionId)
+		}
+		if err := s.deletePDUSessionUserPlane(rANUENGAPID.Value, pduSession, childSAs...); err != nil {
 			ngapLog.Errorf("Release PDU Session[%d] from user plane failed: %v", pduSessionId, err)
 			return
 		}
@@ -2250,11 +2315,6 @@ func (s *Server) HandlePDUSessionResourceReleaseCommand(
 		releaseIdList = append(releaseIdList, pduSessionId)
 	}
 
-	localSPI, ok := n3iwfCtx.IkeSpiLoad(rANUENGAPID.Value)
-	if !ok {
-		ngapLog.Errorf("Cannot get SPI from RanUeNgapID : %+v", rANUENGAPID.Value)
-		return
-	}
 	ranUe.GetSharedCtx().PduSessResRelState = n3iwf_context.PduSessResRelStateOngoing
 
 	s.SendIkeEvt(n3iwf_context.NewSendChildSADeleteRequestEvt(localSPI, releaseIdList))

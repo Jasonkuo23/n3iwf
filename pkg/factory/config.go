@@ -113,6 +113,11 @@ func (c *Config) Validate() error {
 				return err
 			}
 		}
+		if rekey := configuration.ChildSARekey; rekey != nil {
+			if err := rekey.validate(); err != nil {
+				return err
+			}
+		}
 	}
 
 	govalidator.TagMap["cidr"] = govalidator.Validator(func(str string) bool {
@@ -135,20 +140,21 @@ type Configuration struct {
 
 	Metrics *Metrics `yaml:"metrics,omitempty" valid:"optional"`
 
-	TCPPort              int         `yaml:"nasTcpPort"           valid:"required,port"`
-	IKEBindAddr          string      `yaml:"ikeBindAddress"       valid:"required,host"`
-	UEIPAddressRange     string      `yaml:"ueIpAddressRange"     valid:"required,cidr"` // e.g. 10.0.1.0/24
-	IPSecGatewayAddr     string      `yaml:"ipSecTunnelAddress"   valid:"required,host"`
-	XfrmIfaceName        string      `yaml:"xfrmInterfaceName"    valid:"optional,stringlength(1|10)"` // must != 0
-	XfrmIfaceId          uint32      `yaml:"xfrmInterfaceID"      valid:"optional"`                    // must != 0
-	N3IWFGTPBindAddress  string      `yaml:"n3iwfGtpBindAddress"  valid:"required,host"`
-	UserPlaneBackend     string      `yaml:"userPlaneBackend"     valid:"optional,in(linux|onvm)"`
-	N3IWFDPControlSocket string      `yaml:"n3iwfDpControlSocket" valid:"optional"`
-	FQDN                 string      `yaml:"fqdn"                 valid:"required,host"` // e.g. n3iwf.Saviah.com
-	PrivateKey           string      `yaml:"privateKey"           valid:"optional"`
-	CertificateAuthority string      `yaml:"certificateAuthority" valid:"optional"`
-	Certificate          string      `yaml:"certificate"          valid:"optional"`
-	LivenessCheck        *TimerValue `yaml:"livenessCheck"        valid:"required"`
+	TCPPort              int                 `yaml:"nasTcpPort"           valid:"required,port"`
+	IKEBindAddr          string              `yaml:"ikeBindAddress"       valid:"required,host"`
+	UEIPAddressRange     string              `yaml:"ueIpAddressRange"     valid:"required,cidr"` // e.g. 10.0.1.0/24
+	IPSecGatewayAddr     string              `yaml:"ipSecTunnelAddress"   valid:"required,host"`
+	XfrmIfaceName        string              `yaml:"xfrmInterfaceName"    valid:"optional,stringlength(1|10)"` // must != 0
+	XfrmIfaceId          uint32              `yaml:"xfrmInterfaceID"      valid:"optional"`                    // must != 0
+	N3IWFGTPBindAddress  string              `yaml:"n3iwfGtpBindAddress"  valid:"required,host"`
+	UserPlaneBackend     string              `yaml:"userPlaneBackend"     valid:"optional,in(linux|onvm)"`
+	N3IWFDPControlSocket string              `yaml:"n3iwfDpControlSocket" valid:"optional"`
+	FQDN                 string              `yaml:"fqdn"                 valid:"required,host"` // e.g. n3iwf.Saviah.com
+	PrivateKey           string              `yaml:"privateKey"           valid:"optional"`
+	CertificateAuthority string              `yaml:"certificateAuthority" valid:"optional"`
+	Certificate          string              `yaml:"certificate"          valid:"optional"`
+	LivenessCheck        *TimerValue         `yaml:"livenessCheck"        valid:"required"`
+	ChildSARekey         *ChildSARekeyConfig `yaml:"childSARekey,omitempty" valid:"optional"`
 }
 
 type Logger struct {
@@ -163,6 +169,42 @@ type TimerValue struct {
 	MaxRetryTimes int32         `yaml:"maxRetryTimes" valid:"optional"`
 }
 
+type ChildSARekeyConfig struct {
+	Enable          bool          `yaml:"enable" valid:"optional"`
+	Lifetime        time.Duration `yaml:"lifetime" valid:"optional"`
+	Jitter          time.Duration `yaml:"jitter" valid:"optional"`
+	OverlapDuration time.Duration `yaml:"overlapDuration" valid:"optional"`
+	RetransmitTime  time.Duration `yaml:"retransmitTime" valid:"optional"`
+	MaxRetransmits  uint32        `yaml:"maxRetransmits" valid:"optional"`
+}
+
+const (
+	ChildSARekeyDefaultRetransmitTime = 2 * time.Second
+	ChildSARekeyDefaultMaxRetransmits = uint32(3)
+)
+
+func (c *ChildSARekeyConfig) validate() error {
+	if c == nil || !c.Enable {
+		return nil
+	}
+	if c.Lifetime <= 0 {
+		return errors.New("childSARekey.lifetime must be positive when enabled")
+	}
+	if c.OverlapDuration < 0 || c.OverlapDuration >= c.Lifetime {
+		return errors.New("childSARekey.overlapDuration must be non-negative and shorter than lifetime")
+	}
+	if c.Jitter < 0 || c.Jitter >= c.Lifetime {
+		return errors.New("childSARekey.jitter must be non-negative and shorter than lifetime")
+	}
+	if c.RetransmitTime < 0 {
+		return errors.New("childSARekey.retransmitTime must be non-negative")
+	}
+	if c.MaxRetransmits > 10 {
+		return errors.New("childSARekey.maxRetransmits must not exceed 10")
+	}
+	return nil
+}
+
 func appendInvalid(err error) error {
 	var errs govalidator.Errors
 
@@ -170,7 +212,10 @@ func appendInvalid(err error) error {
 		return nil
 	}
 
-	es := err.(govalidator.Errors).Errors()
+	es := []error{err}
+	if validationErrors, ok := err.(govalidator.Errors); ok {
+		es = validationErrors.Errors()
+	}
 	for _, e := range es {
 		errs = append(errs, fmt.Errorf("invalid %w", e))
 	}
@@ -433,6 +478,25 @@ func (c *Config) GetLivenessCheck() TimerValue {
 	c.RLock()
 	defer c.RUnlock()
 	return *c.Configuration.LivenessCheck
+}
+
+func (c *Config) GetChildSARekey() ChildSARekeyConfig {
+	c.RLock()
+	defer c.RUnlock()
+	if c.Configuration == nil || c.Configuration.ChildSARekey == nil {
+		return ChildSARekeyConfig{}
+	}
+	policy := *c.Configuration.ChildSARekey
+	if policy.Enable && policy.RetransmitTime == 0 {
+		policy.RetransmitTime = ChildSARekeyDefaultRetransmitTime
+	}
+	if policy.Enable && policy.Jitter == 0 {
+		policy.Jitter = policy.Lifetime / 20
+	}
+	if policy.Enable && policy.MaxRetransmits == 0 {
+		policy.MaxRetransmits = ChildSARekeyDefaultMaxRetransmits
+	}
+	return policy
 }
 
 type Tls struct {

@@ -35,6 +35,61 @@ import (
 
 const userPlaneControlTimeout = 2 * time.Second
 
+func (s *Server) upsertChildSAUserPlane(
+	ranUeNgapID int64,
+	pduSession *n3iwf_context.PDUSession,
+	childSA *n3iwf_context.ChildSecurityAssociation,
+) (uint64, error) {
+	if pduSession == nil || pduSession.Id <= 0 || pduSession.Id > math.MaxUint32 ||
+		ranUeNgapID < 0 || childSA == nil {
+		return 0, errors.New("invalid Child SA identity for user-plane upsert")
+	}
+	sa, err := userplane.BuildChildSA(ranUeNgapID, pduSession.Id, childSA)
+	if err != nil {
+		return 0, err
+	}
+	defer userplane.ClearChildSAKeys(&sa)
+	generation, err := pduSession.NextUserPlaneGeneration()
+	if err != nil {
+		return 0, err
+	}
+	ctx, cancel := context.WithTimeout(s.CancelContext(), userPlaneControlTimeout)
+	defer cancel()
+	if err := s.UserPlane().UpsertChildSA(ctx, generation, sa); err != nil {
+		return 0, errors.Wrapf(err, "upsert Child SA SPI 0x%08x generation %d",
+			childSA.InboundSPI, generation)
+	}
+	return generation, nil
+}
+
+// retireChildSAUserPlane ends only one side of a rekey overlap.  The PDU
+// session and the replacement Child SA remain programmed; the dataplane uses
+// the monotonically increasing generation to reject delayed updates.
+func (s *Server) retireChildSAUserPlane(
+	ranUeNgapID int64,
+	pduSession *n3iwf_context.PDUSession,
+	childSA *n3iwf_context.ChildSecurityAssociation,
+) (uint64, error) {
+	if pduSession == nil || pduSession.Id <= 0 || pduSession.Id > math.MaxUint32 ||
+		ranUeNgapID < 0 || childSA == nil || childSA.InboundSPI == 0 {
+		return 0, errors.New("invalid Child SA identity for user-plane retirement")
+	}
+	generation, err := pduSession.NextUserPlaneGeneration()
+	if err != nil {
+		return 0, err
+	}
+	ctx, cancel := context.WithTimeout(s.CancelContext(), userPlaneControlTimeout)
+	defer cancel()
+	if err := s.UserPlane().DeleteChildSA(ctx, generation, uint64(ranUeNgapID),
+		uint32(pduSession.Id), childSA.InboundSPI); err != nil {
+		return 0, errors.Wrapf(err, "retire Child SA SPI 0x%08x generation %d",
+			childSA.InboundSPI, generation)
+	}
+	logger.IKELog.Infof("Retired ONVM Child SA SPI 0x%08x for PDU Session[%d] generation %d",
+		childSA.InboundSPI, pduSession.Id, generation)
+	return generation, nil
+}
+
 func (s *Server) upsertPDUSessionUserPlane(
 	ranUeNgapID int64,
 	pduSession *n3iwf_context.PDUSession,
@@ -50,21 +105,12 @@ func (s *Server) upsertPDUSessionUserPlane(
 	if err != nil {
 		return err
 	}
-	sa, err := userplane.BuildChildSA(ranUeNgapID, pduSession.Id, childSA)
-	if err != nil {
-		return err
-	}
-	defer userplane.ClearChildSAKeys(&sa)
-	generation, err := pduSession.NextUserPlaneGeneration()
+	generation, err := s.upsertChildSAUserPlane(ranUeNgapID, pduSession, childSA)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(s.CancelContext(), userPlaneControlTimeout)
 	defer cancel()
-	if err := s.UserPlane().UpsertChildSA(ctx, generation, sa); err != nil {
-		return errors.Wrapf(err, "upsert Child SA SPI 0x%08x generation %d",
-			childSA.InboundSPI, generation)
-	}
 	generation, err = pduSession.NextUserPlaneGeneration()
 	if err != nil {
 		return err
@@ -77,8 +123,11 @@ func (s *Server) upsertPDUSessionUserPlane(
 		}
 		return errors.Wrapf(err, "upsert PDU Session[%d] generation %d", pduSession.Id, generation)
 	}
-	logger.IKELog.Infof("Programmed ONVM Child SA SPI 0x%08x and PDU Session[%d] generation %d",
-		childSA.InboundSPI, pduSession.Id, generation)
+	logger.IKELog.Infof("Programmed ONVM Child SA SPI 0x%08x and PDU Session[%d] generation %d: UL-TEID=%d DL-TEID=%d QFIs=%v NWu=%s->%s N3=%s->%s NAT-T=%t ports=%d->%d",
+		childSA.InboundSPI, pduSession.Id, generation, session.UplinkTEID,
+		session.DownlinkTEID, session.QFIs, session.UENWuAddress,
+		session.N3IWFNWuAddress, session.N3IWFN3Address, session.UPFN3Address,
+		childSA.EnableEncapsulate, childSA.NATPort, childSA.N3IWFPort)
 	return nil
 }
 
@@ -1033,6 +1082,7 @@ func (s *Server) HandleCREATECHILDSA(
 	var nonce *ike_message.Nonce
 	var trafficSelectorInitiator *ike_message.TrafficSelectorInitiator
 	var trafficSelectorResponder *ike_message.TrafficSelectorResponder
+	var notifications []*ike_message.Notification
 
 	for _, ikePayload := range message.Payloads {
 		switch ikePayload.Type() {
@@ -1044,11 +1094,40 @@ func (s *Server) HandleCREATECHILDSA(
 			trafficSelectorInitiator = ikePayload.(*ike_message.TrafficSelectorInitiator)
 		case ike_message.TypeTSr:
 			trafficSelectorResponder = ikePayload.(*ike_message.TrafficSelectorResponder)
+		case ike_message.TypeN:
+			notifications = append(notifications, ikePayload.(*ike_message.Notification))
 		default:
 			ikeLog.Warnf(
 				"Get IKE payload (type %d) in CREATE_CHILD_SA message, this payload will not be handled by IKE handler",
 				ikePayload.Type())
 		}
+	}
+
+	if !message.IsResponse() {
+		// N3IWF owns the PDU-session rekey schedule. An authenticated
+		// TEMPORARY_FAILURE resolves a simultaneous peer rekey while our request
+		// is outstanding; otherwise NO_ADDITIONAL_SAS rejects peer ownership.
+		// This prevents two competing replacements and preserves one downlink
+		// generation winner.
+		var responsePayload ike_message.IKEPayloadContainer
+		notifyType := peerChildSARequestRejection(notifications, ikeSecurityAssociation)
+		responsePayload.BuildNotification(
+			ike_message.TypeNone, notifyType, nil, nil)
+		response := ike_message.NewMessage(message.InitiatorSPI, message.ResponderSPI,
+			ike_message.CREATE_CHILD_SA, true, false, message.MessageID, responsePayload)
+		if err := SendIKEMessageToUE(udpConn, n3iwfAddr, ueAddr, response,
+			ikeSecurityAssociation.IKESAKey); err != nil {
+			ikeLog.Errorf("Reject peer-initiated CREATE_CHILD_SA: %v", err)
+			return
+		}
+		ikeSecurityAssociation.InitiatorMessageID++
+		return
+	}
+
+	if s.handleChildSARekeyResponse(message, securityAssociation, nonce,
+		trafficSelectorInitiator, trafficSelectorResponder, notifications,
+		ikeSecurityAssociation) {
+		return
 	}
 
 	// Check received message
@@ -1252,6 +1331,7 @@ func (s *Server) continueCreateChildSA(
 		s.CreatePDUSessionChildSA(ikeUe, temporaryPDUSessionSetupData)
 		return
 	}
+	s.scheduleChildSARekey(childSecurityAssociationContext)
 	// Forward PDU Seesion Establishment Accept to UE
 	s.SendNgapEvt(n3iwf_context.NewSendNASMsgEvt(ranNgapId))
 
@@ -1277,6 +1357,11 @@ func (s *Server) HandleInformational(
 	responseIKEPayload := new(ike_message.IKEPayloadContainer)
 
 	n3iwfIke := ikeSecurityAssociation.IkeUE
+	if message.IsResponse() {
+		if !s.handleRekeyDeleteResponse(message, ikeSecurityAssociation) {
+			ikeSecurityAssociation.OutstandingRequest.Store(false)
+		}
+	}
 
 	if n3iwfIke.N3IWFIKESecurityAssociation.DPDReqRetransTimer != nil {
 		n3iwfIke.N3IWFIKESecurityAssociation.DPDReqRetransTimer.Stop()
@@ -1337,6 +1422,12 @@ func (s *Server) HandleEvent(ikeEvt n3iwf_context.IkeEvt) {
 		s.HandleIKEContextUpdate(ikeEvt)
 	case n3iwf_context.GetNGAPContextResponse:
 		s.HandleGetNGAPContextResponse(ikeEvt)
+	case n3iwf_context.RekeyChildSA:
+		s.HandleRekeyChildSA(ikeEvt.(*n3iwf_context.RekeyChildSAEvt))
+	case n3iwf_context.RetireRekeyChildSA:
+		s.HandleRetireRekeyChildSA(ikeEvt.(*n3iwf_context.RetireRekeyChildSAEvt))
+	case n3iwf_context.RetransmitRekeyRequest:
+		s.HandleRetransmitRekeyRequest(ikeEvt.(*n3iwf_context.RetransmitRekeyRequestEvt))
 	default:
 		ikeLog.Errorf("Undefine IKE event type : %d", ikeEvt.Type())
 		return
@@ -1805,6 +1896,9 @@ func (s *Server) StartDPD(ikeUe *n3iwf_context.N3IWFIkeUe) {
 				timer.Stop()
 				return
 			case <-timer.C:
+				if !ikeSA.OutstandingRequest.CompareAndSwap(false, true) {
+					continue
+				}
 				var payload *ike_message.IKEPayloadContainer
 				SendUEInformationExchange(ikeSA, ikeSA.IKESAKey, payload, false, false,
 					ikeSA.ResponderMessageID, ikeUe.IKEConnection.Conn, ikeUe.IKEConnection.UEAddr,
@@ -1814,6 +1908,7 @@ func (s *Server) StartDPD(ikeUe *n3iwf_context.N3IWFIkeUe) {
 				ikeSA.DPDReqRetransTimer = n3iwf_context.NewDPDPeriodicTimer(
 					DPDReqRetransTime, liveness.MaxRetryTimes, ikeSA,
 					func() {
+						ikeSA.OutstandingRequest.Store(false)
 						ikeLog.Errorf("UE is down")
 						ranNgapId, ok := n3iwfCtx.NgapIdLoad(ikeSA.LocalSPI)
 						if !ok {
@@ -1954,12 +2049,16 @@ func (s *Server) handleDeletePayload(payload *ike_message.Delete, isResponse boo
 			responseIKEPayload.BuildDeletePayload(ike_message.TypeESP, 4, uint16(len(deletSPIs)), deletSPIs)
 		}
 
-		evt = n3iwf_context.NewendPDUSessionResourceReleaseEvt(ranNgapId, deletPduIds)
+		if len(deletPduIds) != 0 {
+			evt = n3iwf_context.NewendPDUSessionResourceReleaseEvt(ranNgapId, deletPduIds)
+		}
 	default:
 		return nil, errors.Errorf("Get Protocol ID %d in Informational delete payload, "+
 			"this payload will not be handled by IKE handler", payload.ProtocolID)
 	}
-	s.SendNgapEvt(evt)
+	if evt != nil {
+		s.SendNgapEvt(evt)
+	}
 	return responseIKEPayload, nil
 }
 
@@ -2240,11 +2339,17 @@ func (s *Server) deleteChildSAFromSPIList(ikeUe *n3iwf_context.N3IWFIkeUe, spiLi
 					return nil, nil, errors.Errorf("PDU Session[%d] is absent during Child-SA deletion",
 						pduSessionID)
 				}
-				if err := s.deletePDUSessionUserPlane(ranNgapID, pduSession, childSA); err != nil {
-					return nil, nil, err
+				if hasOtherChildSAForPDUSession(ikeUe, childSA, pduSessionID) {
+					if _, err := s.retireChildSAUserPlane(ranNgapID, pduSession, childSA); err != nil {
+						return nil, nil, err
+					}
+				} else {
+					if err := s.deletePDUSessionUserPlane(ranNgapID, pduSession, childSA); err != nil {
+						return nil, nil, err
+					}
+					deletePduIds = append(deletePduIds, pduSessionID)
 				}
 				deleteSPIs = append(deleteSPIs, childSA.InboundSPI)
-				deletePduIds = append(deletePduIds, pduSessionID)
 
 				err := ikeUe.DeleteChildSA(childSA)
 				if err != nil {
@@ -2259,4 +2364,25 @@ func (s *Server) deleteChildSAFromSPIList(ikeUe *n3iwf_context.N3IWFIkeUe, spiLi
 	}
 
 	return deleteSPIs, deletePduIds, nil
+}
+
+func hasOtherChildSAForPDUSession(
+	ikeUe *n3iwf_context.N3IWFIkeUe,
+	excluded *n3iwf_context.ChildSecurityAssociation,
+	pduSessionID int64,
+) bool {
+	if ikeUe == nil {
+		return false
+	}
+	for _, candidate := range ikeUe.N3IWFChildSecurityAssociation {
+		if candidate == nil || candidate == excluded {
+			continue
+		}
+		for _, candidateSessionID := range candidate.PDUSessionIds {
+			if candidateSessionID == pduSessionID {
+				return true
+			}
+		}
+	}
+	return false
 }

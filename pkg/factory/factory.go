@@ -37,7 +37,10 @@ func ReadConfig(cfgPath string) (*Config, error) {
 		return nil, fmt.Errorf("ReadConfig [%s] Error: %+v", cfgPath, err)
 	}
 	if err := cfg.Validate(); err != nil {
-		validErrs := err.(govalidator.Errors).Errors()
+		validErrs := []error{err}
+		if validationErrors, ok := err.(govalidator.Errors); ok {
+			validErrs = validationErrors.Errors()
+		}
 		for _, validErr := range validErrs {
 			logger.CfgLog.Errorf("%+v", validErr)
 		}

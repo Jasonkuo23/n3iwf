@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"sync"
+	"sync/atomic"
 
 	"github.com/pkg/errors"
 	"github.com/vishvananda/netlink"
@@ -93,6 +95,79 @@ type IKESecurityAssociation struct {
 	CurrentRetryTimes  int32  // Accumulate the number of times the DPD response wasn't received
 	IKESAClosedCh      chan struct{}
 	IsUseDPD           bool
+	OutstandingRequest atomic.Bool // one outbound IKE request; RFC 7296 default window is one
+	RekeyRequestMu     sync.Mutex
+	RekeyRequest       *RekeyRequestState
+}
+
+type RekeyRequestKind uint8
+
+const (
+	RekeyCreateRequest RekeyRequestKind = iota + 1
+	RekeyDeleteRequest
+)
+
+// RekeyRequestState retains the exact encrypted datagram so every IKEv2
+// retransmission is byte-identical. Key material is not stored here.
+type RekeyRequestState struct {
+	Kind            RekeyRequestKind
+	MessageID       uint32
+	OldInboundSPI   uint32
+	NewInboundSPI   uint32
+	Packet          []byte
+	Retransmissions uint32
+}
+
+func (ikeSA *IKESecurityAssociation) BeginRekeyRequest(request RekeyRequestState) bool {
+	ikeSA.RekeyRequestMu.Lock()
+	defer ikeSA.RekeyRequestMu.Unlock()
+	if ikeSA.RekeyRequest != nil ||
+		!ikeSA.OutstandingRequest.CompareAndSwap(false, true) {
+		return false
+	}
+	request.Packet = append([]byte(nil), request.Packet...)
+	ikeSA.RekeyRequest = &request
+	return true
+}
+
+func (ikeSA *IKESecurityAssociation) RekeyRequestSnapshot(messageID uint32) (RekeyRequestState, bool) {
+	ikeSA.RekeyRequestMu.Lock()
+	defer ikeSA.RekeyRequestMu.Unlock()
+	if ikeSA.RekeyRequest == nil || ikeSA.RekeyRequest.MessageID != messageID {
+		return RekeyRequestState{}, false
+	}
+	request := *ikeSA.RekeyRequest
+	request.Packet = append([]byte(nil), request.Packet...)
+	return request, true
+}
+
+func (ikeSA *IKESecurityAssociation) CountRekeyRetransmission(messageID uint32) bool {
+	ikeSA.RekeyRequestMu.Lock()
+	defer ikeSA.RekeyRequestMu.Unlock()
+	if ikeSA.RekeyRequest == nil || ikeSA.RekeyRequest.MessageID != messageID {
+		return false
+	}
+	ikeSA.RekeyRequest.Retransmissions++
+	return true
+}
+
+func (ikeSA *IKESecurityAssociation) FinishRekeyRequest(
+	messageID uint32,
+	kind RekeyRequestKind,
+) (RekeyRequestState, bool) {
+	ikeSA.RekeyRequestMu.Lock()
+	defer ikeSA.RekeyRequestMu.Unlock()
+	if ikeSA.RekeyRequest == nil || ikeSA.RekeyRequest.MessageID != messageID ||
+		ikeSA.RekeyRequest.Kind != kind {
+		return RekeyRequestState{}, false
+	}
+	request := *ikeSA.RekeyRequest
+	for index := range ikeSA.RekeyRequest.Packet {
+		ikeSA.RekeyRequest.Packet[index] = 0
+	}
+	ikeSA.RekeyRequest = nil
+	ikeSA.OutstandingRequest.Store(false)
+	return request, true
 }
 
 func (ikeSA *IKESecurityAssociation) String() string {
@@ -142,6 +217,12 @@ type ChildSecurityAssociation struct {
 	IkeUE *N3IWFIkeUe
 
 	LocalIsInitiator bool
+
+	// RekeyOfInboundSPI is non-zero only while this Child SA replaces an
+	// existing SA. InitiatorNonce belongs to the pending CREATE_CHILD_SA
+	// exchange and is cleared after key derivation.
+	RekeyOfInboundSPI uint32
+	InitiatorNonce    []byte
 }
 
 func (childSA *ChildSecurityAssociation) String(xfrmiId uint32) string {
@@ -295,6 +376,29 @@ func (ikeUe *N3IWFIkeUe) CreateHalfChildSA(msgID, inboundSPI uint32, pduSessionI
 	childSA.IkeUE = ikeUe
 	// Map Exchange Message ID and Child SA data until get paired response
 	ikeUe.TemporaryExchangeMsgIDChildSAMapping[msgID] = childSA
+}
+
+func (ikeUe *N3IWFIkeUe) CreateHalfChildSARekey(
+	msgID, inboundSPI uint32,
+	pduSessionID int64,
+	rekeyOfInboundSPI uint32,
+	initiatorNonce []byte,
+) {
+	ikeUe.CreateHalfChildSA(msgID, inboundSPI, pduSessionID)
+	childSA := ikeUe.TemporaryExchangeMsgIDChildSAMapping[msgID]
+	childSA.RekeyOfInboundSPI = rekeyOfInboundSPI
+	childSA.InitiatorNonce = append([]byte(nil), initiatorNonce...)
+}
+
+func (ikeUe *N3IWFIkeUe) DiscardHalfChildSA(msgID uint32) {
+	childSA, ok := ikeUe.TemporaryExchangeMsgIDChildSAMapping[msgID]
+	if !ok {
+		return
+	}
+	for index := range childSA.InitiatorNonce {
+		childSA.InitiatorNonce[index] = 0
+	}
+	delete(ikeUe.TemporaryExchangeMsgIDChildSAMapping, msgID)
 }
 
 func (ikeUe *N3IWFIkeUe) CompleteChildSA(msgID uint32, outboundSPI uint32,

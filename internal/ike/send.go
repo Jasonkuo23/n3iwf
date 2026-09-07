@@ -21,9 +21,25 @@ func SendIKEMessageToUE(
 	ikeLog := logger.IKELog
 	ikeLog.Trace("Send IKE message to UE")
 	ikeLog.Trace("Encoding...")
+	pkt, err := EncodeIKEPacketToUE(srcAddr, message, ikeSAKey)
+	if err != nil {
+		return err
+	}
+	ikeLog.Trace("Sending...")
+	return WriteIKEPacketToUE(udpConn, dstAddr, pkt)
+}
+
+func EncodeIKEPacketToUE(
+	srcAddr *net.UDPAddr,
+	message *ike_message.IKEMessage,
+	ikeSAKey *security.IKESAKey,
+) ([]byte, error) {
+	if srcAddr == nil || message == nil {
+		return nil, errors.New("EncodeIKEPacketToUE: nil address or message")
+	}
 	pkt, err := ike.EncodeEncrypt(message, ikeSAKey, ike_message.Role_Responder)
 	if err != nil {
-		return errors.Wrapf(err, "SendIKEMessageToUE")
+		return nil, errors.Wrapf(err, "EncodeIKEPacketToUE")
 	}
 	// As specified in RFC 7296 section 3.1, the IKE message send from/to UDP port 4500
 	// should prepend a 4 bytes zero
@@ -31,14 +47,19 @@ func SendIKEMessageToUE(
 		prependZero := make([]byte, 4)
 		pkt = append(prependZero, pkt...)
 	}
+	return pkt, nil
+}
 
-	ikeLog.Trace("Sending...")
+func WriteIKEPacketToUE(udpConn *net.UDPConn, dstAddr *net.UDPAddr, pkt []byte) error {
+	if udpConn == nil || dstAddr == nil || len(pkt) == 0 {
+		return errors.New("WriteIKEPacketToUE: nil socket/address or empty packet")
+	}
 	n, err := udpConn.WriteToUDP(pkt, dstAddr)
 	if err != nil {
-		return errors.Wrapf(err, "SendIKEMessageToUE")
+		return errors.Wrapf(err, "WriteIKEPacketToUE")
 	}
 	if n != len(pkt) {
-		return errors.Errorf("SendIKEMessageToUE Not all of the data is sent. Total length: %d. Sent: %d.",
+		return errors.Errorf("WriteIKEPacketToUE: not all data sent: total=%d sent=%d",
 			len(pkt), n)
 	}
 	return nil

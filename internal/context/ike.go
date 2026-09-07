@@ -13,10 +13,49 @@ const (
 	SendChildSADeleteRequest
 	IKEContextUpdate
 	GetNGAPContextResponse
+	RekeyChildSA
+	RetireRekeyChildSA
+	RetransmitRekeyRequest
 )
 
 type IkeEvt interface {
 	Type() IkeEventType
+}
+
+type RetransmitRekeyRequestEvt struct {
+	LocalSPI  uint64
+	MessageID uint32
+}
+
+func (*RetransmitRekeyRequestEvt) Type() IkeEventType { return RetransmitRekeyRequest }
+
+func NewRetransmitRekeyRequestEvt(localSPI uint64, messageID uint32) *RetransmitRekeyRequestEvt {
+	return &RetransmitRekeyRequestEvt{LocalSPI: localSPI, MessageID: messageID}
+}
+
+type RekeyChildSAEvt struct {
+	LocalSPI      uint64
+	OldInboundSPI uint32
+}
+
+func (*RekeyChildSAEvt) Type() IkeEventType { return RekeyChildSA }
+
+func NewRekeyChildSAEvt(localSPI uint64, oldInboundSPI uint32) *RekeyChildSAEvt {
+	return &RekeyChildSAEvt{LocalSPI: localSPI, OldInboundSPI: oldInboundSPI}
+}
+
+type RetireRekeyChildSAEvt struct {
+	LocalSPI      uint64
+	OldInboundSPI uint32
+	NewInboundSPI uint32
+}
+
+func (*RetireRekeyChildSAEvt) Type() IkeEventType { return RetireRekeyChildSA }
+
+func NewRetireRekeyChildSAEvt(localSPI uint64, oldInboundSPI, newInboundSPI uint32) *RetireRekeyChildSAEvt {
+	return &RetireRekeyChildSAEvt{
+		LocalSPI: localSPI, OldInboundSPI: oldInboundSPI, NewInboundSPI: newInboundSPI,
+	}
 }
 
 type UnmarshalEAP5GDataResponseEvt struct {

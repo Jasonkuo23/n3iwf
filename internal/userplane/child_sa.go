@@ -8,6 +8,11 @@ import (
 	n3iwf_context "github.com/free5gc/n3iwf/internal/context"
 )
 
+// A 64-packet replay window is too small for line-rate software ESP when the
+// host or NIC delivers a burst out of order. DPDK supports larger power-of-two
+// windows; 4096 retains anti-replay protection while tolerating short bursts.
+const dataPlaneReplayWindow uint32 = 4096
+
 // BuildChildSA converts negotiated IKEv2 state into the directionally explicit
 // N3DP contract. Key slices are copied so serialization cannot mutate IKE state.
 func BuildChildSA(ranUeNgapID int64, pduSessionID int64,
@@ -45,7 +50,7 @@ func BuildChildSA(ranUeNgapID int64, pduSessionID int64,
 		UEID: uint64(ranUeNgapID), PDUSessionID: uint32(pduSessionID),
 		InboundSPI: child.InboundSPI, OutboundSPI: child.OutboundSPI,
 		EncryptionID: child.EncrKInfo.TransformID(), IntegrityID: integrityID,
-		ReplayWindow: 64, ESN: child.EsnInfo.GetNeedESN(),
+		ReplayWindow: dataPlaneReplayWindow, ESN: child.EsnInfo.GetNeedESN(),
 		LocalAddress: append(net.IP(nil), local...), PeerAddress: append(net.IP(nil), peer...),
 		LocalSelector:         append(net.IP(nil), child.TrafficSelectorLocal.IP...),
 		PeerSelector:          append(net.IP(nil), child.TrafficSelectorRemote.IP...),

@@ -141,6 +141,15 @@ func (s *Server) Stop() {
 // from the connection and call forward() to forward NAS messages
 // to AMF
 func serveConn(ranUe *n3iwf_context.N3IWFRanUe, connection net.Conn, wg *sync.WaitGroup) {
+	serveConnWithForwarder(ranUe, connection, wg, forward)
+}
+
+func serveConnWithForwarder(
+	ranUe *n3iwf_context.N3IWFRanUe,
+	connection net.Conn,
+	wg *sync.WaitGroup,
+	forwarder func(*n3iwf_context.N3IWFRanUe, []byte),
+) {
 	nwucpLog := logger.NWuCPLog
 	defer func() {
 		if p := recover(); p != nil {
@@ -180,21 +189,24 @@ func serveConn(ranUe *n3iwf_context.N3IWFRanUe, connection net.Conn, wg *sync.Wa
 		fwdNas := make([]byte, n)
 		copy(fwdNas, buf[:n])
 
-		wg.Add(1)
-		go forward(ranUe, fwdNas, wg)
+		// A UE's NAS messages share one ordered TCP stream and one NAS uplink
+		// sequence space. Forward them to the AMF in that same order. Starting
+		// one goroutine per frame can let a PDU Session Establishment Request
+		// overtake the preceding Registration Complete, causing the AMF to
+		// reject the sequence and retransmit Registration Accept.
+		forwarder(ranUe, fwdNas)
 	}
 }
 
 // forward forwards NAS messages sent from UE to the
 // associated AMF
-func forward(ranUe *n3iwf_context.N3IWFRanUe, packet []byte, wg *sync.WaitGroup) {
+func forward(ranUe *n3iwf_context.N3IWFRanUe, packet []byte) {
 	nwucpLog := logger.NWuCPLog
 	defer func() {
 		if p := recover(); p != nil {
 			// Print stack for panic to log. Fatalf() will let program exit.
 			nwucpLog.Fatalf("panic: %v\n%s", p, string(debug.Stack()))
 		}
-		wg.Done()
 	}()
 
 	nwucpLog.Trace("Forward NWu -> N2")

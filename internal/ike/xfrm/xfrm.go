@@ -15,22 +15,43 @@ import (
 
 type XFRMEncryptionAlgorithmType uint16
 
-func addOrUpdateXFRMState(state *netlink.XfrmState) error {
-	if err := netlink.XfrmStateAdd(state); err != nil {
+var (
+	xfrmStateAdd  = netlink.XfrmStateAdd
+	xfrmStateDel  = netlink.XfrmStateDel
+	xfrmPolicyAdd = netlink.XfrmPolicyAdd
+	xfrmPolicyDel = netlink.XfrmPolicyDel
+)
+
+func addOrReplaceXFRMState(state *netlink.XfrmState) error {
+	if err := xfrmStateAdd(state); err != nil {
 		if errors.Cause(err) != unix.EEXIST {
 			return err
 		}
-		return netlink.XfrmStateUpdate(state)
+		// XFRM state identity is destination/protocol/SPI.  A peer which
+		// restarts can legitimately reuse an SPI while an SA from its prior
+		// connection is still present.  netlink v1.1.0 builds UPDSA requests
+		// with CREATE|EXCL; on affected kernels that request can report success
+		// without replacing the algorithms or keys.  Explicit replacement is
+		// required or downlink signalling is encrypted with the stale key.
+		if err = xfrmStateDel(state); err != nil &&
+			errors.Cause(err) != unix.ENOENT {
+			return errors.Wrap(err, "delete stale XFRM state")
+		}
+		return xfrmStateAdd(state)
 	}
 	return nil
 }
 
-func addOrUpdateXFRMPolicy(policy *netlink.XfrmPolicy) error {
-	if err := netlink.XfrmPolicyAdd(policy); err != nil {
+func addOrReplaceXFRMPolicy(policy *netlink.XfrmPolicy) error {
+	if err := xfrmPolicyAdd(policy); err != nil {
 		if errors.Cause(err) != unix.EEXIST {
 			return err
 		}
-		return netlink.XfrmPolicyUpdate(policy)
+		if err = xfrmPolicyDel(policy); err != nil &&
+			errors.Cause(err) != unix.ENOENT {
+			return errors.Wrap(err, "delete stale XFRM policy")
+		}
+		return xfrmPolicyAdd(policy)
 	}
 	return nil
 }
@@ -141,7 +162,7 @@ func ApplyXFRMRule(n3iwf_is_initiator bool, xfrmiId uint32,
 
 	// Commit xfrm state to netlink
 	var err error
-	if err = addOrUpdateXFRMState(xfrmState); err != nil {
+	if err = addOrReplaceXFRMState(xfrmState); err != nil {
 		return errors.Wrapf(err, "Add XFRM state")
 	}
 
@@ -168,7 +189,7 @@ func ApplyXFRMRule(n3iwf_is_initiator bool, xfrmiId uint32,
 	}
 
 	// Commit xfrm policy to netlink
-	if err = addOrUpdateXFRMPolicy(xfrmPolicy); err != nil {
+	if err = addOrReplaceXFRMPolicy(xfrmPolicy); err != nil {
 		return errors.Wrapf(err, "Add XFRM policy")
 	}
 
@@ -204,7 +225,7 @@ func ApplyXFRMRule(n3iwf_is_initiator bool, xfrmiId uint32,
 	}
 
 	// Commit xfrm state to netlink
-	if err = addOrUpdateXFRMState(xfrmState); err != nil {
+	if err = addOrReplaceXFRMState(xfrmState); err != nil {
 		return errors.Wrapf(err, "Add XFRM state")
 	}
 
@@ -221,7 +242,7 @@ func ApplyXFRMRule(n3iwf_is_initiator bool, xfrmiId uint32,
 	}
 
 	// Commit xfrm policy to netlink
-	if err = addOrUpdateXFRMPolicy(xfrmPolicy); err != nil {
+	if err = addOrReplaceXFRMPolicy(xfrmPolicy); err != nil {
 		return errors.Wrapf(err, "Add XFRM policy")
 	}
 
