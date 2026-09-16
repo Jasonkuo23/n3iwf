@@ -147,7 +147,6 @@ type Configuration struct {
 	XfrmIfaceName        string              `yaml:"xfrmInterfaceName"    valid:"optional,stringlength(1|10)"` // must != 0
 	XfrmIfaceId          uint32              `yaml:"xfrmInterfaceID"      valid:"optional"`                    // must != 0
 	N3IWFGTPBindAddress  string              `yaml:"n3iwfGtpBindAddress"  valid:"required,host"`
-	UserPlaneBackend     string              `yaml:"userPlaneBackend"     valid:"optional,in(linux|onvm)"`
 	N3IWFDPControlSocket string              `yaml:"n3iwfDpControlSocket" valid:"optional"`
 	FQDN                 string              `yaml:"fqdn"                 valid:"required,host"` // e.g. n3iwf.Saviah.com
 	PrivateKey           string              `yaml:"privateKey"           valid:"optional"`
@@ -385,15 +384,6 @@ func (c *Config) GetN3iwfGtpBindAddress() string {
 	c.RLock()
 	defer c.RUnlock()
 	return c.Configuration.N3IWFGTPBindAddress
-}
-
-func (c *Config) GetUserPlaneBackend() string {
-	c.RLock()
-	defer c.RUnlock()
-	if c.Configuration.UserPlaneBackend != "" {
-		return c.Configuration.UserPlaneBackend
-	}
-	return "linux"
 }
 
 func (c *Config) GetN3iwfDPControlSocket() string {

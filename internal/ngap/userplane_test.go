@@ -19,8 +19,6 @@ type recordingDeleteUserPlane struct {
 	deletedSPIs           []uint32
 }
 
-func (*recordingDeleteUserPlane) Name() string                { return userplane.BackendONVM }
-func (*recordingDeleteUserPlane) UsesKernelDataPlane() bool   { return false }
 func (*recordingDeleteUserPlane) Start(context.Context) error { return nil }
 func (*recordingDeleteUserPlane) UpsertSession(context.Context, uint64, userplane.Session) error {
 	return nil

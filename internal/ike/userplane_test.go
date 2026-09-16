@@ -49,8 +49,6 @@ type recordingUserPlane struct {
 	session          userplane.Session
 }
 
-func (*recordingUserPlane) Name() string                { return userplane.BackendONVM }
-func (*recordingUserPlane) UsesKernelDataPlane() bool   { return false }
 func (*recordingUserPlane) Start(context.Context) error { return nil }
 func (r *recordingUserPlane) UpsertSession(
 	_ context.Context,

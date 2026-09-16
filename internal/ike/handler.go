@@ -9,7 +9,6 @@ import (
 	"crypto/sha1" // #nosec G505
 	"encoding/binary"
 	"encoding/hex"
-	"fmt"
 	"math"
 	"net"
 	"runtime/debug"
@@ -17,7 +16,6 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
 	eap "github.com/free5gc/ike/eap"
@@ -96,9 +94,6 @@ func (s *Server) upsertPDUSessionUserPlane(
 	ikeUe *n3iwf_context.N3IWFIkeUe,
 	childSA *n3iwf_context.ChildSecurityAssociation,
 ) error {
-	if s.UserPlane().UsesKernelDataPlane() {
-		return nil
-	}
 	session, err := userplane.BuildSession(
 		ranUeNgapID, pduSession, ikeUe,
 		s.Config().GetIPSecGatewayAddr(), s.Config().GetN3iwfGtpBindAddress())
@@ -1275,49 +1270,7 @@ func (s *Server) continueCreateChildSA(
 	}
 
 	childSecurityAssociationContext.LocalIsInitiator = true
-	if s.UserPlane().UsesKernelDataPlane() {
-		newXfrmiId := cfg.GetXfrmIfaceId()
-		pduSessionListLen := ikeUe.PduSessionListLen
-
-		// The additional PDU session will be separated from default xfrm interface
-		// to avoid SPD entry collision.
-		if pduSessionListLen > 1 {
-			var linkIPSec netlink.Link
-			n3iwfIPAddr := net.ParseIP(ipsecGwAddr).To4()
-			n3iwfIPAddrAndSubnet := net.IPNet{
-				IP: n3iwfIPAddr, Mask: n3iwfCtx.IPSecInnerIPPool.IPSubnet.Mask,
-			}
-			newXfrmiId += cfg.GetXfrmIfaceId() + n3iwfCtx.XfrmIfaceIdOffsetForUP
-			newXfrmiName := fmt.Sprintf("%s-%d", cfg.GetXfrmIfaceName(), newXfrmiId)
-
-			linkIPSec, err = xfrm.SetupIPsecXfrmi(
-				newXfrmiName, n3iwfCtx.XfrmParentIfaceName,
-				newXfrmiId, n3iwfIPAddrAndSubnet)
-			if err != nil {
-				ikeLog.Errorf("Setup XFRM interface %s fail: %v", newXfrmiName, err)
-				return
-			}
-
-			ikeLog.Infof("Setup XFRM interface: %s", newXfrmiName)
-			n3iwfCtx.XfrmIfaces.LoadOrStore(newXfrmiId, linkIPSec)
-			childSecurityAssociationContext.XfrmIface = linkIPSec
-			n3iwfCtx.XfrmIfaceIdOffsetForUP++
-		} else {
-			linkIPSec, loaded := n3iwfCtx.XfrmIfaces.Load(newXfrmiId)
-			if !loaded {
-				ikeLog.Warnf("Cannot find the XFRM interface with if_id: %d", newXfrmiId)
-				return
-			}
-			childSecurityAssociationContext.XfrmIface = linkIPSec.(netlink.Link)
-		}
-
-		err = xfrm.ApplyXFRMRule(true, newXfrmiId, childSecurityAssociationContext)
-		if err != nil {
-			ikeLog.Errorf("Applying XFRM rules failed: %v", err)
-			return
-		}
-		ikeLog.Debugln(childSecurityAssociationContext.String(newXfrmiId))
-	} else if err = s.upsertPDUSessionUserPlane(
+	if err = s.upsertPDUSessionUserPlane(
 		ranNgapId, temporaryPDUSessionSetupData.UnactivatedPDUSession[temporaryPDUSessionSetupData.Index-1],
 		ikeUe, childSecurityAssociationContext); err != nil {
 		ikeLog.Errorf("Program ONVM PDU session failed: %v", err)

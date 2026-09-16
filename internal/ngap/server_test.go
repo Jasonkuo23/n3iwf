@@ -59,7 +59,7 @@ func NewN3iwfTestApp(cfg *factory.Config) (*n3iwfTestApp, error) {
 		cancel: cancel,
 		wg:     &sync.WaitGroup{},
 	}
-	n3iwfApp.userPlane, err = userplane.New(userplane.BackendLinux, "")
+	n3iwfApp.userPlane, err = userplane.New("/tmp/n3iwf-ngap-test.sock")
 	if err != nil {
 		return nil, err
 	}

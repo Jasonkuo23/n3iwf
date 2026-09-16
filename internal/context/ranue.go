@@ -3,7 +3,6 @@ package context
 import (
 	"fmt"
 	"math"
-	"net"
 	"sync"
 
 	"github.com/free5gc/ngap/ngapType"
@@ -29,10 +28,6 @@ type RanUe interface {
 	// Get Attributes
 	GetUserLocationInformation() *ngapType.UserLocationInformation
 	GetSharedCtx() *RanUeSharedCtx
-
-	// User Plane Traffic
-	// ForwardDL(gtpQoSMsg.QoSTPDUPacket)
-	// ForwardUL()
 
 	// Others
 	CreatePDUSession(int64, ngapType.SNSSAI) (*PDUSession, error)
@@ -112,7 +107,6 @@ type QosFlow struct {
 
 type GTPConnectionInfo struct {
 	UPFIPAddr    string
-	UPFUDPAddr   net.Addr
 	IncomingTEID uint32
 	OutgoingTEID uint32
 }

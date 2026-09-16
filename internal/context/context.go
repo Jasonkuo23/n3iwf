@@ -16,15 +16,13 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/pkg/errors"
-	gtpv1 "github.com/wmnsk/go-gtp/gtpv1"
-
 	"github.com/free5gc/n3iwf/internal/logger"
 	"github.com/free5gc/n3iwf/pkg/factory"
 	"github.com/free5gc/ngap/ngapType"
 	"github.com/free5gc/sctp"
 	"github.com/free5gc/util/idgenerator"
 	"github.com/free5gc/util/ippool"
+	"github.com/pkg/errors"
 )
 
 type n3iwf interface {
@@ -44,7 +42,6 @@ type N3IWFContext struct {
 	AMFReInitAvailableList sync.Map // map[string]bool, SCTPAddr as key
 	IKESA                  sync.Map // map[uint64]*IKESecurityAssociation, SPI as key
 	ChildSA                sync.Map // map[uint32]*ChildSecurityAssociation, inboundSPI as key
-	GTPConnectionWithUPF   sync.Map // map[string]*gtpv1.UPlaneConn, UPF address as key
 	AllocatedUEIPAddress   sync.Map // map[string]*N3IWFIkeUe, IPAddr as key
 	AllocatedUETEID        sync.Map // map[uint32]*RanUe, TEID as key
 	IKEUePool              sync.Map // map[uint64]*N3IWFIkeUe, SPI as key
@@ -60,11 +57,9 @@ type N3IWFContext struct {
 	IPSecInnerIPPool *ippool.IPPool
 	// TODO: [TWIF] TwifUe may has its own IP address pool
 
-	// XFRM interface
+	// XFRM interface for the signalling Child SA.
 	XfrmIfaces          sync.Map // map[uint32]*netlink.Link, XfrmIfaceId as key
 	XfrmParentIfaceName string
-	// Every UE's first UP IPsec will use default XFRM interface, additoinal UP IPsec will offset its XFRM id
-	XfrmIfaceIdOffsetForUP uint32
 }
 
 func NewContext(n3iwf n3iwf) (*N3IWFContext, error) {
@@ -366,22 +361,6 @@ func (c *N3IWFContext) IKESALoad(spi uint64) (*IKESecurityAssociation, bool) {
 		return securityAssociation.(*IKESecurityAssociation), ok
 	}
 	return nil, false
-}
-
-func (c *N3IWFContext) DeleteGTPConnection(upfAddr string) {
-	c.GTPConnectionWithUPF.Delete(upfAddr)
-}
-
-func (c *N3IWFContext) GTPConnectionWithUPFLoad(upfAddr string) (*gtpv1.UPlaneConn, bool) {
-	conn, ok := c.GTPConnectionWithUPF.Load(upfAddr)
-	if ok {
-		return conn.(*gtpv1.UPlaneConn), ok
-	}
-	return nil, false
-}
-
-func (c *N3IWFContext) GTPConnectionWithUPFStore(upfAddr string, conn *gtpv1.UPlaneConn) {
-	c.GTPConnectionWithUPF.Store(upfAddr, conn)
 }
 
 func (c *N3IWFContext) NewIPsecInnerUEIP(ikeUe *N3IWFIkeUe) (net.IP, error) {

@@ -4,12 +4,10 @@ import (
 	"context"
 	"encoding/binary"
 	"math"
-	"net"
 	"sort"
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/wmnsk/go-gtp/gtpv1"
 
 	"github.com/free5gc/aper"
 	n3iwf_context "github.com/free5gc/n3iwf/internal/context"
@@ -1007,40 +1005,20 @@ func (s *Server) handlePDUSessionResourceSetupRequestTransfer(
 			OutgoingTEID: binary.BigEndian.Uint32(ulNGUUPTNLInformation.GTPTunnel.GTPTEID.Value),
 		}
 
-		// UPF UDP address
-		upfAddr := upfIPv4 + gtpv1.GTPUPort
-		upfUDPAddr, err := net.ResolveUDPAddr("udp", upfAddr)
-		if err != nil {
-			var responseTransfer []byte
-
-			ngapLog.Errorf("Resolve UPF addr [%s] failed: %v", upfAddr, err)
-			cause := message.BuildCause(ngapType.CausePresentTransport,
-				ngapType.CauseTransportPresentTransportResourceUnavailable)
-			responseTransfer, err = message.BuildPDUSessionResourceSetupUnsuccessfulTransfer(*cause, nil)
-			if err != nil {
-				ngapLog.Errorf("Build PDUSessionResourceSetupUnsuccessfulTransfer Error: %v\n", err)
-			}
-			return false, responseTransfer
-		}
-
 		// UE TEID
 		ueTEID := n3iwfCtx.NewTEID(ranUe)
 		if ueTEID == 0 {
-			var responseTransfer []byte
-
 			ngapLog.Error("Invalid TEID (0).")
 			cause := message.BuildCause(
 				ngapType.CausePresentProtocol,
 				ngapType.CauseProtocolPresentUnspecified)
-			responseTransfer, err = message.BuildPDUSessionResourceSetupUnsuccessfulTransfer(*cause, nil)
+			responseTransfer, err := message.BuildPDUSessionResourceSetupUnsuccessfulTransfer(*cause, nil)
 			if err != nil {
 				ngapLog.Errorf("Build PDUSessionResourceSetupUnsuccessfulTransfer Error: %v\n", err)
 			}
 			return false, responseTransfer
 		}
 
-		// Setup GTP connection with UPF
-		gtpConnInfo.UPFUDPAddr = upfUDPAddr
 		gtpConnInfo.IncomingTEID = ueTEID
 
 		pduSession.GTPConnInfo = gtpConnInfo

@@ -61,19 +61,9 @@ func (f *fakeControlClient) Close() error {
 	return nil
 }
 
-func TestNewDefaultsToLinux(t *testing.T) {
-	backend, err := New("", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if backend.Name() != BackendLinux || !backend.UsesKernelDataPlane() {
-		t.Fatalf("unexpected default backend: %s", backend.Name())
-	}
-}
-
-func TestNewRejectsInvalidBackend(t *testing.T) {
-	if _, err := New("invalid", ""); err == nil {
-		t.Fatal("invalid backend accepted")
+func TestNewRequiresControlSocket(t *testing.T) {
+	if _, err := New(""); err == nil {
+		t.Fatal("empty control socket accepted")
 	}
 }
 

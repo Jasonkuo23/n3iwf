@@ -153,7 +153,7 @@ func (s *Server) enqueueIKEEventAfter(delay time.Duration, event n3iwf_context.I
 
 func (s *Server) scheduleChildSARekey(child *n3iwf_context.ChildSecurityAssociation) {
 	policy := s.Config().GetChildSARekey()
-	if !policy.Enable || s.UserPlane().UsesKernelDataPlane() || child == nil ||
+	if !policy.Enable || child == nil ||
 		child.IkeUE == nil || child.InboundSPI == 0 || child.SelectedIPProtocol != oldGREProtocol {
 		return
 	}

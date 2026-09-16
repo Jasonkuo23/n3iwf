@@ -20,7 +20,6 @@ import (
 	"github.com/free5gc/n3iwf/internal/logger"
 	"github.com/free5gc/n3iwf/internal/ngap"
 	"github.com/free5gc/n3iwf/internal/nwucp"
-	"github.com/free5gc/n3iwf/internal/nwuup"
 	"github.com/free5gc/n3iwf/internal/userplane"
 	"github.com/free5gc/n3iwf/pkg/app"
 	"github.com/free5gc/n3iwf/pkg/factory"
@@ -37,7 +36,6 @@ type N3iwfApp struct {
 	cfg           *factory.Config
 	ngapServer    *ngap.Server
 	nwucpServer   *nwucp.Server
-	nwuupServer   *nwuup.Server
 	userPlane     userplane.Backend
 	ikeServer     *ike.Server
 	metricsServer *metrics.Server
@@ -71,11 +69,7 @@ func NewApp(
 	if n3iwf.nwucpServer, err = nwucp.NewServer(n3iwf); err != nil {
 		return nil, errors.Wrap(err, "NewApp()")
 	}
-	if n3iwf.nwuupServer, err = nwuup.NewServer(n3iwf); err != nil {
-		return nil, errors.Wrap(err, "NewApp()")
-	}
-	if n3iwf.userPlane, err = userplane.New(
-		cfg.GetUserPlaneBackend(), cfg.GetN3iwfDPControlSocket()); err != nil {
+	if n3iwf.userPlane, err = userplane.New(cfg.GetN3iwfDPControlSocket()); err != nil {
 		return nil, errors.Wrap(err, "NewApp()")
 	}
 	if n3iwf.ikeServer, err = ike.NewServer(n3iwf); err != nil {
@@ -199,16 +193,9 @@ func (a *N3iwfApp) Run() error {
 	}
 	mainLog.Infof("NAS TCP server successfully started.")
 
-	// The Linux backend retains the raw GRE/GTP-U sockets. The ONVM backend
-	// has already completed a fail-fast N3DP hello and owns user packets.
-	if a.userPlane.UsesKernelDataPlane() {
-		if err := a.nwuupServer.Run(&a.wg); err != nil {
-			return errors.Wrapf(err, "Listen NWu user plane traffic failed")
-		}
-		mainLog.Infof("Listening NWu user plane traffic with Linux backend")
-	} else {
-		mainLog.Infof("N3IWF user plane delegated to %s backend", a.userPlane.Name())
-	}
+	// The fail-fast N3DP hello completed before the network services started;
+	// n3iwf-dp is the sole PDU-session user-plane implementation.
+	mainLog.Infof("N3IWF user plane delegated to ONVM/DPDK dataplane")
 
 	// IKE
 	if err := a.ikeServer.Run(&a.wg); err != nil {
@@ -284,7 +271,6 @@ func (a *N3iwfApp) initDefaultXfrmInterface() error {
 	mainLog.Infof("Setup XFRM interface %s ", newXfrmiName)
 
 	n3iwfCtx.XfrmIfaces.LoadOrStore(cfg.GetXfrmIfaceId(), linkIPSec)
-	n3iwfCtx.XfrmIfaceIdOffsetForUP = 1
 
 	return nil
 }
@@ -313,11 +299,8 @@ func (a *N3iwfApp) terminateProcedure() {
 
 	a.ngapServer.Stop()
 	a.nwucpServer.Stop()
-	if a.userPlane.UsesKernelDataPlane() {
-		a.nwuupServer.Stop()
-	}
 	if err := a.userPlane.Close(); err != nil {
-		logger.MainLog.Errorf("Close %s user-plane backend: %v", a.userPlane.Name(), err)
+		logger.MainLog.Errorf("Close ONVM user-plane backend: %v", err)
 	}
 	a.ikeServer.Stop()
 	if a.metricsServer != nil {
