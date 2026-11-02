@@ -4,14 +4,14 @@ import (
 	"context"
 	"fmt"
 
-	n3iwfdp "github.com/nycu-ucr/l25gc-n3iwf-dp-client"
+	n3iwfup "github.com/nycu-ucr/l25gc-n3iwf-up-client"
 )
 
 // Session is the versioned N3DP session object. It is aliased here so the
-// N3IWF procedure code depends on the dataplane contract, not directly on the
-// Unix-socket control client.
-type Session = n3iwfdp.Session
-type ChildSA = n3iwfdp.ChildSA
+// N3IWF procedure code depends on its user-plane backend, not directly on a
+// particular control transport.
+type Session = n3iwfup.Session
+type ChildSA = n3iwfup.ChildSA
 
 // Backend owns ONVM/DPDK user-plane and Child-SA lifecycle synchronization.
 type Backend interface {
@@ -25,9 +25,9 @@ type Backend interface {
 
 type controlClient interface {
 	Hello(context.Context) error
-	UpsertSession(context.Context, uint64, n3iwfdp.Session) error
+	UpsertSession(context.Context, uint64, n3iwfup.Session) error
 	DeleteSession(context.Context, uint64, uint64, uint32) error
-	UpsertChildSA(context.Context, uint64, n3iwfdp.ChildSA) error
+	UpsertChildSA(context.Context, uint64, n3iwfup.ChildSA) error
 	DeleteChildSA(context.Context, uint64, uint64, uint32, uint32) error
 	Close() error
 }
@@ -38,7 +38,7 @@ type onvmBackend struct {
 
 func (b onvmBackend) Start(ctx context.Context) error {
 	if err := b.client.Hello(ctx); err != nil {
-		return fmt.Errorf("N3IWF-DP hello failed: %w", err)
+		return fmt.Errorf("N3IWF-UP hello failed: %w", err)
 	}
 	return nil
 }
@@ -62,9 +62,23 @@ func (b onvmBackend) DeleteChildSA(ctx context.Context, generation, ueID uint64,
 }
 func (b onvmBackend) Close() error { return b.client.Close() }
 
-func New(socketPath string) (Backend, error) {
-	if socketPath == "" {
-		return nil, fmt.Errorf("N3IWF user plane requires n3iwfDpControlSocket")
+type ControlOptions = n3iwfup.Options
+
+func New(kind, controlName string) (Backend, error) {
+	return NewWithOptions(kind, ControlOptions{ControlName: controlName})
+}
+
+func NewWithOptions(kind string, options ControlOptions) (Backend, error) {
+	switch kind {
+	case "", BackendLinux:
+		return linuxBackend{}, nil
+	case BackendONVM:
+		if options.ControlName == "" {
+			return nil, fmt.Errorf("ONVM user-plane backend requires n3iwfUpControlName")
+		}
+		return onvmBackend{client: n3iwfup.NewWithOptions(options)}, nil
+	default:
+		return nil, fmt.Errorf("unsupported N3IWF user-plane backend %q", kind)
 	}
 	return onvmBackend{client: n3iwfdp.New(socketPath)}, nil
 }
