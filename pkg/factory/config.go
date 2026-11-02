@@ -147,7 +147,9 @@ type Configuration struct {
 	XfrmIfaceName        string              `yaml:"xfrmInterfaceName"    valid:"optional,stringlength(1|10)"` // must != 0
 	XfrmIfaceId          uint32              `yaml:"xfrmInterfaceID"      valid:"optional"`                    // must != 0
 	N3IWFGTPBindAddress  string              `yaml:"n3iwfGtpBindAddress"  valid:"required,host"`
-	N3IWFDPControlSocket string              `yaml:"n3iwfDpControlSocket" valid:"optional"`
+	N3IWFUPControlName   string              `yaml:"n3iwfUpControlName" valid:"optional"`
+	N3IWFUPEALArgs       []string            `yaml:"n3iwfUpEalArgs" valid:"optional"`
+	N3IWFUPControlTrace  bool                `yaml:"n3iwfUpControlTrace" valid:"optional"`
 	FQDN                 string              `yaml:"fqdn"                 valid:"required,host"` // e.g. n3iwf.Saviah.com
 	PrivateKey           string              `yaml:"privateKey"           valid:"optional"`
 	CertificateAuthority string              `yaml:"certificateAuthority" valid:"optional"`
@@ -386,13 +388,25 @@ func (c *Config) GetN3iwfGtpBindAddress() string {
 	return c.Configuration.N3IWFGTPBindAddress
 }
 
-func (c *Config) GetN3iwfDPControlSocket() string {
+func (c *Config) GetN3iwfUPControlName() string {
 	c.RLock()
 	defer c.RUnlock()
-	if c.Configuration.N3IWFDPControlSocket != "" {
-		return c.Configuration.N3IWFDPControlSocket
+	if c.Configuration.N3IWFUPControlName != "" {
+		return c.Configuration.N3IWFUPControlName
 	}
-	return "/run/l25gc/n3iwf-dp.sock"
+	return "N3DP_CTRL"
+}
+
+func (c *Config) GetN3iwfUPEALArgs() []string {
+	c.RLock()
+	defer c.RUnlock()
+	return append([]string(nil), c.Configuration.N3IWFUPEALArgs...)
+}
+
+func (c *Config) GetN3iwfUPControlTrace() bool {
+	c.RLock()
+	defer c.RUnlock()
+	return c.Configuration.N3IWFUPControlTrace
 }
 
 func (c *Config) GetNasTcpAddr() string {

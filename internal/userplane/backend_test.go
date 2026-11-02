@@ -61,9 +61,12 @@ func (f *fakeControlClient) Close() error {
 	return nil
 }
 
-func TestNewRequiresControlSocket(t *testing.T) {
+func TestNewRequiresControlName(t *testing.T) {
 	if _, err := New(""); err == nil {
-		t.Fatal("empty control socket accepted")
+		t.Fatal("empty control name accepted")
+	}
+	if _, err := NewWithOptions(ControlOptions{}); err == nil {
+		t.Fatal("empty control name accepted with options")
 	}
 }
 

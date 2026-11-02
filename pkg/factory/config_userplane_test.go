@@ -5,19 +5,32 @@ import (
 	"time"
 )
 
-func TestUserPlaneControlSocketDefaults(t *testing.T) {
+func TestUserPlaneControlDefaults(t *testing.T) {
 	cfg := &Config{Configuration: &Configuration{}}
-	if got := cfg.GetN3iwfDPControlSocket(); got != "/run/l25gc/n3iwf-dp.sock" {
-		t.Fatalf("socket=%q", got)
+	if got := cfg.GetN3iwfUPControlName(); got != "N3DP_CTRL" {
+		t.Fatalf("control-name=%q", got)
+	}
+	if cfg.GetN3iwfUPControlTrace() {
+		t.Fatal("control trace enabled by default")
 	}
 }
 
-func TestUserPlaneControlSocketOverride(t *testing.T) {
+func TestUserPlaneControlOverride(t *testing.T) {
 	cfg := &Config{Configuration: &Configuration{
-		N3IWFDPControlSocket: "/tmp/test-n3iwf-dp.sock",
+		N3IWFUPControlName:  "N3DP_TEST",
+		N3IWFUPEALArgs:      []string{"-l", "3", "--proc-type=secondary"},
+		N3IWFUPControlTrace: true,
 	}}
-	if got := cfg.GetN3iwfDPControlSocket(); got != "/tmp/test-n3iwf-dp.sock" {
-		t.Fatalf("socket=%q", got)
+	if got := cfg.GetN3iwfUPControlName(); got != "N3DP_TEST" {
+		t.Fatalf("control-name=%q", got)
+	}
+	args := cfg.GetN3iwfUPEALArgs()
+	if len(args) != 3 || args[1] != "3" || !cfg.GetN3iwfUPControlTrace() {
+		t.Fatal("control options not preserved")
+	}
+	args[1] = "9"
+	if cfg.GetN3iwfUPEALArgs()[1] != "3" {
+		t.Fatal("caller mutated configured EAL arguments")
 	}
 }
 

@@ -62,9 +62,15 @@ func (b onvmBackend) DeleteChildSA(ctx context.Context, generation, ueID uint64,
 }
 func (b onvmBackend) Close() error { return b.client.Close() }
 
-func New(socketPath string) (Backend, error) {
-	if socketPath == "" {
-		return nil, fmt.Errorf("N3IWF user plane requires n3iwfDpControlSocket")
+type ControlOptions = n3iwfup.Options
+
+func New(controlName string) (Backend, error) {
+	return NewWithOptions(ControlOptions{ControlName: controlName})
+}
+
+func NewWithOptions(options ControlOptions) (Backend, error) {
+	if options.ControlName == "" {
+		return nil, fmt.Errorf("N3IWF user plane requires n3iwfUpControlName")
 	}
-	return onvmBackend{client: n3iwfup.New(socketPath)}, nil
+	return onvmBackend{client: n3iwfup.NewWithOptions(options)}, nil
 }

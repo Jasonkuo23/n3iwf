@@ -69,7 +69,7 @@ func BuildChildSA(ranUeNgapID int64, pduSessionID int64,
 }
 
 // ClearChildSAKeys erases temporary contract key copies after the synchronous
-// control-socket acknowledgement. The authoritative IKE context remains.
+// shared-memory control acknowledgement. The authoritative IKE context remains.
 func ClearChildSAKeys(sa *ChildSA) {
 	if sa == nil {
 		return

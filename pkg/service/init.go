@@ -69,7 +69,17 @@ func NewApp(
 	if n3iwf.nwucpServer, err = nwucp.NewServer(n3iwf); err != nil {
 		return nil, errors.Wrap(err, "NewApp()")
 	}
-	if n3iwf.userPlane, err = userplane.New(cfg.GetN3iwfDPControlSocket()); err != nil {
+	controlOptions := userplane.ControlOptions{
+		ControlName: cfg.GetN3iwfUPControlName(),
+		EALArgs:     cfg.GetN3iwfUPEALArgs(),
+	}
+	if cfg.GetN3iwfUPControlTrace() {
+		controlOptions.Trace = func(messageType uint16, generation uint64, elapsedNanos int64, err error) {
+			logger.InitLog.Infof("N3DP control-rtt type=%d generation=%d elapsed_us=%.3f error=%v",
+				messageType, generation, float64(elapsedNanos)/1000, err)
+		}
+	}
+	if n3iwf.userPlane, err = userplane.NewWithOptions(controlOptions); err != nil {
 		return nil, errors.Wrap(err, "NewApp()")
 	}
 	if n3iwf.ikeServer, err = ike.NewServer(n3iwf); err != nil {
@@ -194,7 +204,7 @@ func (a *N3iwfApp) Run() error {
 	mainLog.Infof("NAS TCP server successfully started.")
 
 	// The fail-fast N3DP hello completed before the network services started;
-	// n3iwf-dp is the sole PDU-session user-plane implementation.
+	// n3iwf-up is the sole PDU-session user-plane implementation.
 	mainLog.Infof("N3IWF user plane delegated to ONVM/DPDK dataplane")
 
 	// IKE
