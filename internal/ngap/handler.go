@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"math"
+	"net"
 	"sort"
 	"time"
 
@@ -16,7 +17,6 @@ import (
 	"github.com/free5gc/n3iwf/internal/ngap/message"
 	"github.com/free5gc/ngap/ngapConvert"
 	"github.com/free5gc/ngap/ngapType"
-	"github.com/free5gc/sctp"
 	ngap_metrics "github.com/free5gc/util/metrics/ngap"
 )
 
@@ -111,7 +111,7 @@ func (s *Server) deleteRanUeUserPlaneSessions(ranUe n3iwf_context.RanUe) error {
 
 func (s *Server) HandleNGSetupResponse(
 	sctpAddr string,
-	conn *sctp.SCTPConn,
+	conn net.Conn,
 	pdu *ngapType.NGAPPDU,
 ) {
 	ngapLog := logger.NgapLog
@@ -232,7 +232,7 @@ func (s *Server) HandleNGSetupResponse(
 
 func (s *Server) HandleNGSetupFailure(
 	sctpAddr string,
-	conn *sctp.SCTPConn,
+	conn net.Conn,
 	pdu *ngapType.NGAPPDU,
 ) {
 	ngapLog := logger.NgapLog

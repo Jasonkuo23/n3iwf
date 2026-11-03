@@ -70,3 +70,7 @@ require (
 	google.golang.org/protobuf v1.36.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+require github.com/nycu-ucr/l25gc-n2-transport v0.0.0
+
+replace github.com/nycu-ucr/l25gc-n2-transport => ../../lib/n2-transport

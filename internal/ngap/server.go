@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	lib_ngap "github.com/free5gc/ngap"
 	"github.com/free5gc/sctp"
 	"github.com/free5gc/util/safe_channel"
+	n2 "github.com/nycu-ucr/l25gc-n2-transport"
 )
 
 const (
@@ -36,13 +38,14 @@ type n3iwf interface {
 type Server struct {
 	n3iwf
 
-	conn     []*sctp.SCTPConn
+	conn     []net.Conn
+	shm      *n2.Endpoint
 	rcvPktCh *safe_channel.SafeCh[ReceiveNGAPPacket]
 	rcvEvtCh *safe_channel.SafeCh[n3iwf_context.NgapEvt]
 }
 
 type ReceiveNGAPPacket struct {
-	Conn *sctp.SCTPConn
+	Conn net.Conn
 	Buf  []byte
 }
 
@@ -60,6 +63,14 @@ func (s *Server) Run(wg *sync.WaitGroup) error {
 	// n3iwf context
 	cfg := s.Config()
 
+	if cfg.Configuration.N2Transport == "sctp-shm" {
+		if err := s.startSharedMemory(wg); err != nil {
+			return err
+		}
+		wg.Add(1)
+		go s.runNgapEventHandler(wg)
+		return nil
+	}
 	localAddr := cfg.GetLocalSctpAddr()
 
 	for _, remoteAddr := range cfg.GetAmfSctpAddrs() {
@@ -228,6 +239,9 @@ func (s *Server) SendNgapEvt(evt n3iwf_context.NgapEvt) {
 func (s *Server) Stop() {
 	ngapLog := logger.NgapLog
 	ngapLog.Infof("Close NGAP server....")
+	if s.shm != nil {
+		_ = s.shm.Close()
+	}
 
 	for _, ngapServerConn := range s.conn {
 		if err := ngapServerConn.Close(); err != nil {

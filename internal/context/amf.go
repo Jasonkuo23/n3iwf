@@ -3,16 +3,16 @@ package context
 import (
 	"bytes"
 	"fmt"
+	"net"
 
 	"github.com/free5gc/aper"
 	"github.com/free5gc/ngap/ngapConvert"
 	"github.com/free5gc/ngap/ngapType"
-	"github.com/free5gc/sctp"
 )
 
 type N3IWFAMF struct {
 	SCTPAddr              string
-	SCTPConn              *sctp.SCTPConn
+	SCTPConn              net.Conn
 	AMFName               *ngapType.AMFName
 	ServedGUAMIList       *ngapType.ServedGUAMIList
 	RelativeAMFCapacity   *ngapType.RelativeAMFCapacity
@@ -43,7 +43,7 @@ type SliceOverloadItem struct {
 	TrafficInd *int64
 }
 
-func (amf *N3IWFAMF) init(sctpAddr string, conn *sctp.SCTPConn) {
+func (amf *N3IWFAMF) init(sctpAddr string, conn net.Conn) {
 	amf.SCTPAddr = sctpAddr
 	amf.SCTPConn = conn
 	amf.AMFTNLAssociationList = make(map[string]*AMFTNLAssociationItem)

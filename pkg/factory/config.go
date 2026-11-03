@@ -11,6 +11,7 @@ import (
 
 	"github.com/asaskevich/govalidator"
 	"github.com/mohae/deepcopy"
+	n2 "github.com/nycu-ucr/l25gc-n2-transport"
 
 	"github.com/free5gc/n3iwf/internal/logger"
 	"github.com/free5gc/sctp"
@@ -102,6 +103,14 @@ func (c *Config) Validate() error {
 	}
 
 	if configuration := c.Configuration; configuration != nil {
+		if configuration.N2Transport == "sctp-shm" {
+			if configuration.N2SharedMemory == nil {
+				return fmt.Errorf("n2SharedMemory is required for sctp-shm")
+			}
+			if err := configuration.N2SharedMemory.Validate(); err != nil {
+				return err
+			}
+		}
 		for _, amfSCTPAddress := range configuration.AMFSCTPAddresses {
 			if err := amfSCTPAddress.validate(); err != nil {
 				return err
@@ -134,6 +143,8 @@ type Info struct {
 }
 
 type Configuration struct {
+	N2Transport      string             `yaml:"n2Transport,omitempty" valid:"optional,in(sctp|sctp-shm)"`
+	N2SharedMemory   *n2.Config         `yaml:"n2SharedMemory,omitempty" valid:"-"`
 	N3IWFInfo        *N3IWFNFInfo       `yaml:"n3iwfInformation"        valid:"required"`
 	LocalSctpAddr    string             `yaml:"localSctpAddr,omitempty" valid:"optional,host"`
 	AMFSCTPAddresses []AMFSCTPAddresses `yaml:"amfSCTPAddresses"        valid:"required"`

@@ -1,15 +1,15 @@
 package ngap
 
 import (
+	"net"
 	"runtime/debug"
 
 	"github.com/free5gc/n3iwf/internal/logger"
 	"github.com/free5gc/ngap"
 	"github.com/free5gc/ngap/ngapType"
-	"github.com/free5gc/sctp"
 )
 
-func (s *Server) NGAPDispatch(conn *sctp.SCTPConn, msg []byte) {
+func (s *Server) NGAPDispatch(conn net.Conn, msg []byte) {
 	ngapLog := logger.NgapLog
 
 	defer func() {

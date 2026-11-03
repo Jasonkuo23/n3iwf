@@ -1,12 +1,12 @@
 package message
 
 import (
+	"net"
 	"runtime/debug"
 
 	n3iwf_context "github.com/free5gc/n3iwf/internal/context"
 	"github.com/free5gc/n3iwf/internal/logger"
 	"github.com/free5gc/ngap/ngapType"
-	"github.com/free5gc/sctp"
 	ngap_metrics "github.com/free5gc/util/metrics/ngap"
 )
 
@@ -29,7 +29,7 @@ func SendToAmf(amf *n3iwf_context.N3IWFAMF, pkt []byte) (bool, string) {
 }
 
 func SendNGSetupRequest(
-	conn *sctp.SCTPConn,
+	conn net.Conn,
 	n3iwfCtx *n3iwf_context.N3IWFContext,
 ) {
 	ngapLog := logger.NgapLog
@@ -562,7 +562,7 @@ func SendErrorIndication(
 }
 
 func SendErrorIndicationWithSctpConn(
-	sctpConn *sctp.SCTPConn,
+	sctpConn net.Conn,
 	amfUENGAPID *int64,
 	ranUENGAPID *int64,
 	cause *ngapType.Cause,

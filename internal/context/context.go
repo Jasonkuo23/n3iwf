@@ -19,7 +19,6 @@ import (
 	"github.com/free5gc/n3iwf/internal/logger"
 	"github.com/free5gc/n3iwf/pkg/factory"
 	"github.com/free5gc/ngap/ngapType"
-	"github.com/free5gc/sctp"
 	"github.com/free5gc/util/idgenerator"
 	"github.com/free5gc/util/ippool"
 	"github.com/pkg/errors"
@@ -288,7 +287,7 @@ func (c *N3IWFContext) IkeUeLoadFromNgapId(ranUeNgapId int64) (*N3IWFIkeUe, erro
 	return nil, fmt.Errorf("cannot find SPI from NgapId : %+v", ranUeNgapId)
 }
 
-func (c *N3IWFContext) NewN3iwfAmf(sctpAddr string, conn *sctp.SCTPConn) *N3IWFAMF {
+func (c *N3IWFContext) NewN3iwfAmf(sctpAddr string, conn net.Conn) *N3IWFAMF {
 	amf := new(N3IWFAMF)
 	amf.init(sctpAddr, conn)
 	item, loaded := c.AMFPool.LoadOrStore(sctpAddr, amf)
