@@ -46,6 +46,7 @@ type Server struct {
 
 type ReceiveNGAPPacket struct {
 	Conn net.Conn
+	Err  error
 	Buf  []byte
 }
 
@@ -107,6 +108,18 @@ func (s *Server) runNgapEventHandler(wg *sync.WaitGroup) {
 	for {
 		select {
 		case rcvPkt := <-rcvPktCh:
+			if rcvPkt.Err != nil && rcvPkt.Conn != nil {
+				key := rcvPkt.Conn.RemoteAddr().String()
+				if amf, ok := s.Context().AMFPoolLoad(key); ok {
+					for _, ue := range amf.N3iwfRanUeList {
+						if err := s.releaseIkeUeAndRanUe(ue); err != nil {
+							ngapLog.Errorf("N2 disconnect UE/user-plane cleanup: %v", err)
+						}
+					}
+					s.Context().DeleteN3iwfAmf(key)
+				}
+				ngapLog.Errorf("N2 SCTP/shared-memory association closed: %v; restart both endpoints before re-registration", rcvPkt.Err)
+			}
 			if len(rcvPkt.Buf) == 0 { // receiver closed
 				return
 			}

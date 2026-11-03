@@ -40,7 +40,7 @@ func (s *Server) startSharedMemory(wg *sync.WaitGroup) error {
 		for {
 			n, err := conn.Read(buf)
 			if err != nil {
-				s.rcvPktCh.Send(ReceiveNGAPPacket{Conn: conn})
+				s.rcvPktCh.Send(ReceiveNGAPPacket{Conn: conn, Err: err})
 				return
 			}
 			s.rcvPktCh.Send(ReceiveNGAPPacket{Conn: conn, Buf: append([]byte(nil), buf[:n]...)})
